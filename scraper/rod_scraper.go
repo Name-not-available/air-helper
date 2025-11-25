@@ -23,9 +23,34 @@ func NewRodScraper() (*RodScraper, error) {
 		Set("disable-blink-features", "AutomationControlled").
 		NoSandbox(true).
 		Leakless(false). // Disable leakless to avoid antivirus issues
-		UserDataDir("")
+		UserDataDir("").
+		// Additional flags for Linux compatibility
+		Set("disable-dev-shm-usage").
+		Set("disable-gpu").
+		Set("no-first-run").
+		Set("no-default-browser-check").
+		Set("disable-extensions").
+		Set("disable-background-networking").
+		Set("disable-background-timer-throttling").
+		Set("disable-renderer-backgrounding").
+		Set("disable-backgrounding-occluded-windows").
+		Set("disable-breakpad").
+		Set("disable-client-side-phishing-detection").
+		Set("disable-default-apps").
+		Set("disable-hang-monitor").
+		Set("disable-popup-blocking").
+		Set("disable-prompt-on-repost").
+		Set("disable-sync").
+		Set("disable-translate").
+		Set("metrics-recording-only").
+		Set("mute-audio").
+		Set("no-zygote").
+		Set("safebrowsing-disable-auto-update").
+		Set("enable-automation").
+		Set("password-store=basic").
+		Set("use-mock-keychain")
 
-	// Try to find Chrome in common locations
+	// Try to find Chrome in common locations (Windows)
 	chromePaths := []string{
 		`C:\Program Files\Google\Chrome\Application\chrome.exe`,
 		`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
@@ -36,6 +61,26 @@ func NewRodScraper() (*RodScraper, error) {
 		chromePaths = append(chromePaths, `C:\Users\`+username+`\AppData\Local\Google\Chrome\Application\chrome.exe`)
 	}
 
+	// Try Linux Chrome/Chromium paths
+	linuxPaths := []string{
+		"/usr/bin/google-chrome",
+		"/usr/bin/google-chrome-stable",
+		"/usr/bin/chromium",
+		"/usr/bin/chromium-browser",
+		"/snap/bin/chromium",
+	}
+
+	// Check if running on Linux
+	if os.Getenv("PATH") != "" {
+		for _, path := range linuxPaths {
+			if _, err := os.Stat(path); err == nil {
+				launcher = launcher.Bin(path)
+				break
+			}
+		}
+	}
+
+	// Check Windows paths
 	for _, path := range chromePaths {
 		if _, err := os.Stat(path); err == nil {
 			launcher = launcher.Bin(path)
@@ -45,7 +90,7 @@ func NewRodScraper() (*RodScraper, error) {
 
 	browserURL, err := launcher.Launch()
 	if err != nil {
-		return nil, fmt.Errorf("failed to launch browser: %w", err)
+		return nil, fmt.Errorf("failed to launch browser: %w\n\nNote: On Linux, you may need to install Chromium dependencies:\n  apt-get update && apt-get install -y chromium chromium-sandbox || yum install -y chromium", err)
 	}
 
 	browser := rod.New().ControlURL(browserURL)

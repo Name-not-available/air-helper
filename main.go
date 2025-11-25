@@ -113,6 +113,16 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 
 	log.Printf("Authorized on account %s\n", bot.Self.UserName)
 
+	// Send startup notification to admin
+	adminID := int64(420478432)
+	startupMsg := tgbotapi.NewMessage(adminID, "🚀 Service started successfully!")
+	_, err = bot.Send(startupMsg)
+	if err != nil {
+		log.Printf("Warning: Failed to send startup notification to admin: %v\n", err)
+	} else {
+		log.Printf("Startup notification sent to admin %d\n", adminID)
+	}
+
 	// Initialize database
 	database, err := db.NewDB()
 	if err != nil {
