@@ -47,8 +47,14 @@ func NewRodScraper() (*RodScraper, error) {
 		Set("no-zygote").
 		Set("safebrowsing-disable-auto-update").
 		Set("enable-automation").
-		Set("password-store=basic").
-		Set("use-mock-keychain")
+		Set("use-mock-keychain").
+		// Memory optimization flags
+		Set("memory-pressure-off").
+		Set("disable-background-timer-throttling").
+		Set("disable-backgrounding-occluded-windows").
+		Set("disable-renderer-backgrounding").
+		Set("disable-ipc-flooding-protection").
+		Set("disable-features", "TranslateUI,BlinkGenPropertyTrees")
 
 	// Try to find Chrome in common locations (Windows)
 	chromePaths := []string{

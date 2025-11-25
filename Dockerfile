@@ -22,22 +22,22 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o airbnb-scraper .
 # Runtime stage
 FROM alpine:latest
 
-# Install Chromium and required dependencies
+# Install Chromium and minimal required dependencies only
 RUN apk add --no-cache \
     chromium \
-    chromium-chromedriver \
     nss \
     freetype \
-    freetype-dev \
     harfbuzz \
     ca-certificates \
     ttf-freefont \
-    ttf-liberation \
-    && rm -rf /var/cache/apk/*
+    && rm -rf /var/cache/apk/* \
+    && rm -rf /usr/share/chromium/locales \
+    && rm -rf /usr/share/chromium/resources \
+    && find /usr/share/chromium -name "*.pak" ! -name "chrome_100_percent.pak" ! -name "chrome_200_percent.pak" -delete || true
 
-# Set Chromium path
+# Set Chromium path and memory-optimized flags
 ENV CHROME_BIN=/usr/bin/chromium-browser
-ENV CHROMIUM_FLAGS="--no-sandbox --headless --disable-gpu"
+ENV CHROMIUM_FLAGS="--no-sandbox --headless --disable-gpu --disable-dev-shm-usage --single-process --disable-setuid-sandbox"
 
 WORKDIR /app
 

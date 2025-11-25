@@ -113,7 +113,7 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 
 	log.Printf("Authorized on account %s\n", bot.Self.UserName)
 
-	// Send startup notification to admin
+	// Send startup notification to admin (only once)
 	adminID := int64(420478432)
 	startupMsg := tgbotapi.NewMessage(adminID, "🚀 Service started successfully!")
 	_, err = bot.Send(startupMsg)
@@ -162,11 +162,13 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 	log.Println("Scheduler started")
 	defer sched.Stop()
 
-	// Set up update configuration
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
+	// Set up update configuration - start from latest update to skip old ones
+	// Get the latest update ID first to avoid processing old updates
+	updateConfig := tgbotapi.NewUpdate(0)
+	updateConfig.Timeout = 60
+	updateConfig.Offset = -1 // This will get only new updates
 
-	updates := bot.GetUpdatesChan(u)
+	updates := bot.GetUpdatesChan(updateConfig)
 
 	// Handle updates
 	for update := range updates {
