@@ -161,19 +161,37 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 			continue
 		}
 
-		// Check if user is allowed
 		userID := update.Message.From.ID
-		if !allowedUserIDs[userID] {
-			log.Printf("Unauthorized user attempted to use bot: %d\n", userID)
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Sorry, you are not authorized to use this bot.")
-			bot.Send(msg)
-			continue
-		}
 
-		// Handle commands
+		// Handle commands first (before authorization check for /start)
 		if update.Message.IsCommand() {
-			switch update.Message.Command() {
+			// Check authorization for commands (except /start which should work for everyone initially)
+			command := update.Message.Command()
+			if command != "start" && !allowedUserIDs[userID] {
+				log.Printf("Unauthorized user attempted to use command: %d\n", userID)
+				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Sorry, you are not authorized to use this bot.")
+				bot.Send(msg)
+				continue
+			}
+
+			switch command {
 			case "start":
+				// Check if user is allowed
+				if !allowedUserIDs[userID] {
+					log.Printf("Unauthorized user attempted to use bot: %d\n", userID)
+					msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Sorry, you are not authorized to use this bot.")
+					bot.Send(msg)
+					continue
+				}
+
+				// Initialize user config
+				_, err := database.GetUserConfig(userID)
+				if err != nil {
+					log.Printf("Warning: Failed to initialize user config for user %d: %v\n", userID, err)
+				} else {
+					log.Printf("User config initialized for user %d\n", userID)
+				}
+
 				// Send welcome message
 				welcomeMsg := tgbotapi.NewMessage(update.Message.Chat.ID, "Welcome! Send me an Airbnb search URL to scrape listings. Results will be added to Google Sheets.")
 				bot.Send(welcomeMsg)
@@ -206,6 +224,14 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Unknown command. Use /help for available commands.")
 				bot.Send(msg)
 			}
+			continue
+		}
+
+		// Check if user is allowed (for non-command messages)
+		if !allowedUserIDs[userID] {
+			log.Printf("Unauthorized user attempted to use bot: %d\n", userID)
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Sorry, you are not authorized to use this bot.")
+			bot.Send(msg)
 			continue
 		}
 

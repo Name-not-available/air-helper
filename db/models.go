@@ -26,7 +26,7 @@ type Request struct {
 	Status             string // "created", "in_progress", "done", "failed"
 	ListingsCount      int
 	PagesCount         int
-	SheetName          string
+	SheetName          sql.NullString
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
@@ -87,23 +87,26 @@ func (db *DB) GetUserConfig(userID int64) (*UserConfig, error) {
 // CreateRequest creates a new scraping request
 func (db *DB) CreateRequest(userID int64, telegramMessageID int, url string) (*Request, error) {
 	var req Request
+	var sheetName sql.NullString
 	err := db.conn.QueryRow(`
 		INSERT INTO requests (user_id, telegram_message_id, url, status)
 		VALUES ($1, $2, $3, 'created')
 		RETURNING id, user_id, telegram_message_id, url, status, listings_count, pages_count, sheet_name, created_at, updated_at
 	`, userID, telegramMessageID, url).Scan(
 		&req.ID, &req.UserID, &req.TelegramMessageID, &req.URL, &req.Status,
-		&req.ListingsCount, &req.PagesCount, &req.SheetName, &req.CreatedAt, &req.UpdatedAt,
+		&req.ListingsCount, &req.PagesCount, &sheetName, &req.CreatedAt, &req.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	req.SheetName = sheetName
 	return &req, nil
 }
 
 // GetNextCreatedRequest gets the next request with status 'created'
 func (db *DB) GetNextCreatedRequest() (*Request, error) {
 	var req Request
+	var sheetName sql.NullString
 	err := db.conn.QueryRow(`
 		SELECT id, user_id, telegram_message_id, url, status, listings_count, pages_count, sheet_name, created_at, updated_at
 		FROM requests
@@ -113,7 +116,7 @@ func (db *DB) GetNextCreatedRequest() (*Request, error) {
 		FOR UPDATE SKIP LOCKED
 	`).Scan(
 		&req.ID, &req.UserID, &req.TelegramMessageID, &req.URL, &req.Status,
-		&req.ListingsCount, &req.PagesCount, &req.SheetName, &req.CreatedAt, &req.UpdatedAt,
+		&req.ListingsCount, &req.PagesCount, &sheetName, &req.CreatedAt, &req.UpdatedAt,
 	)
 
 	if err == sql.ErrNoRows {
@@ -124,6 +127,7 @@ func (db *DB) GetNextCreatedRequest() (*Request, error) {
 		return nil, err
 	}
 
+	req.SheetName = sheetName
 	return &req, nil
 }
 
@@ -187,17 +191,19 @@ func (db *DB) SaveListing(requestID int, title, url string, price *float64, curr
 // GetRequestByID retrieves a request by ID
 func (db *DB) GetRequestByID(requestID int) (*Request, error) {
 	var req Request
+	var sheetName sql.NullString
 	err := db.conn.QueryRow(`
 		SELECT id, user_id, telegram_message_id, url, status, listings_count, pages_count, sheet_name, created_at, updated_at
 		FROM requests
 		WHERE id = $1
 	`, requestID).Scan(
 		&req.ID, &req.UserID, &req.TelegramMessageID, &req.URL, &req.Status,
-		&req.ListingsCount, &req.PagesCount, &req.SheetName, &req.CreatedAt, &req.UpdatedAt,
+		&req.ListingsCount, &req.PagesCount, &sheetName, &req.CreatedAt, &req.UpdatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	req.SheetName = sheetName
 	return &req, nil
 }
 
