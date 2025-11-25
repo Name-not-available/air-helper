@@ -154,7 +154,10 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 	log.Printf("Google Sheets writer initialized for spreadsheet: %s\n", spreadsheetID)
 
 	// Initialize and start scheduler
-	sched := scheduler.NewScheduler(database, bot, writer, spreadsheetURL)
+	sched, err := scheduler.NewScheduler(database, bot, writer, spreadsheetURL)
+	if err != nil {
+		log.Fatalf("Error: Failed to initialize scheduler: %v\n", err)
+	}
 	sched.Start()
 	log.Println("Scheduler started")
 	defer sched.Stop()

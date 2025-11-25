@@ -19,25 +19,37 @@ import (
 
 // Scheduler processes scraping requests from the database
 type Scheduler struct {
-	db            *db.DB
-	bot           *tgbotapi.BotAPI
-	writer        *sheets.Writer
+	db             *db.DB
+	bot            *tgbotapi.BotAPI
+	writer         *sheets.Writer
 	spreadsheetURL string
-	ctx           context.Context
-	cancel        context.CancelFunc
+	scraper        scraper.Scraper
+	ctx            context.Context
+	cancel         context.CancelFunc
 }
 
-// NewScheduler creates a new scheduler
-func NewScheduler(database *db.DB, bot *tgbotapi.BotAPI, writer *sheets.Writer, spreadsheetURL string) *Scheduler {
+// NewScheduler creates a new scheduler and initializes the browser
+func NewScheduler(database *db.DB, bot *tgbotapi.BotAPI, writer *sheets.Writer, spreadsheetURL string) (*Scheduler, error) {
 	ctx, cancel := context.WithCancel(context.Background())
+
+	// Initialize browser once at startup
+	log.Println("Initializing browser...")
+	rodScraper, err := scraper.NewRodScraper()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to initialize browser: %w", err)
+	}
+	log.Println("Browser initialized successfully")
+
 	return &Scheduler{
 		db:             database,
 		bot:            bot,
 		writer:         writer,
 		spreadsheetURL: spreadsheetURL,
+		scraper:        scraper.Scraper(rodScraper),
 		ctx:            ctx,
 		cancel:         cancel,
-	}
+	}, nil
 }
 
 // Start starts the scheduler in a goroutine
@@ -45,9 +57,18 @@ func (s *Scheduler) Start() {
 	go s.run()
 }
 
-// Stop stops the scheduler
+// Stop stops the scheduler and closes the browser
 func (s *Scheduler) Stop() {
 	s.cancel()
+	if s.scraper != nil {
+		if rs, ok := s.scraper.(*scraper.RodScraper); ok {
+			if err := rs.Close(); err != nil {
+				log.Printf("Warning: Failed to close browser: %v\n", err)
+			} else {
+				log.Println("Browser closed successfully")
+			}
+		}
+	}
 }
 
 // run is the main scheduler loop
@@ -105,24 +126,17 @@ func (s *Scheduler) processNextRequest() {
 	cfg.Filters.MaxPrice = userConfig.MaxPrice
 	cfg.Filters.MinStars = userConfig.MinStars
 
-	// Create scraper
-	rodScraper, err := scraper.NewRodScraper()
-	if err != nil {
-		log.Printf("Error creating scraper: %v\n", err)
+	// Use the pre-initialized scraper (browser is already running)
+	if s.scraper == nil {
+		err := fmt.Errorf("scraper not initialized")
+		log.Printf("Error: %v\n", err)
 		s.handleRequestError(req, err)
 		return
 	}
-	defer func() {
-		if err := rodScraper.Close(); err != nil {
-			log.Printf("Warning: Failed to close browser: %v\n", err)
-		}
-	}()
-
-	scraperInstance := scraper.Scraper(rodScraper)
 
 	// Scrape pages with status updates
 	// We'll scrape page by page and send updates
-	htmlPages, err := s.scrapeWithUpdates(scraperInstance, req.URL, userConfig.MaxPages, req.TelegramMessageID, req.UserID)
+	htmlPages, err := s.scrapeWithUpdates(s.scraper, req.URL, userConfig.MaxPages, req.TelegramMessageID, req.UserID)
 	if err != nil {
 		log.Printf("Error scraping: %v\n", err)
 		s.handleRequestError(req, err)
