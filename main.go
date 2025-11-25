@@ -9,10 +9,12 @@ import (
 	"strings"
 
 	"airbnb-scraper/config"
+	"airbnb-scraper/db"
 	"airbnb-scraper/filter"
 	"airbnb-scraper/models"
 	"airbnb-scraper/parser"
 	"airbnb-scraper/scraper"
+	"airbnb-scraper/scheduler"
 	"airbnb-scraper/sheets"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -82,6 +84,12 @@ func runCLIMode(url, configPath string, maxPages int, spreadsheetURL, credential
 	}
 }
 
+// Allowed user IDs
+var allowedUserIDs = map[int64]bool{
+	420478432: true,
+	425120436: true,
+}
+
 // runTelegramBot runs the scraper as a Telegram bot
 func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentialsPath string) {
 	// Refresh environment variables (Windows-specific)
@@ -100,6 +108,14 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 	}
 
 	log.Printf("Authorized on account %s\n", bot.Self.UserName)
+
+	// Initialize database
+	database, err := db.NewDB()
+	if err != nil {
+		log.Fatalf("Error: Failed to initialize database: %v\n", err)
+	}
+	defer database.Close()
+	log.Println("Database initialized successfully")
 
 	// Initialize Google Sheets writer
 	spreadsheetID := sheets.ExtractSpreadsheetID(spreadsheetURL)
@@ -123,14 +139,17 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 
 	log.Printf("Google Sheets writer initialized for spreadsheet: %s\n", spreadsheetID)
 
+	// Initialize and start scheduler
+	sched := scheduler.NewScheduler(database, bot, writer, spreadsheetURL)
+	sched.Start()
+	log.Println("Scheduler started")
+	defer sched.Stop()
+
 	// Set up update configuration
 	u := tgbotapi.NewUpdate(0)
 	u.Timeout = 60
 
 	updates := bot.GetUpdatesChan(u)
-
-	// Load configuration once
-	cfg := loadConfig(configPath)
 
 	// Handle updates
 	for update := range updates {
@@ -138,12 +157,34 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 			continue
 		}
 
+		// Check if user is allowed
+		userID := update.Message.From.ID
+		if !allowedUserIDs[userID] {
+			log.Printf("Unauthorized user attempted to use bot: %d\n", userID)
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Sorry, you are not authorized to use this bot.")
+			bot.Send(msg)
+			continue
+		}
+
 		// Handle commands
 		if update.Message.IsCommand() {
 			switch update.Message.Command() {
 			case "start":
-				msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Welcome! Send me an Airbnb search URL to scrape listings. Results will be added to Google Sheets.")
-				bot.Send(msg)
+				// Send welcome message
+				welcomeMsg := tgbotapi.NewMessage(update.Message.Chat.ID, "Welcome! Send me an Airbnb search URL to scrape listings. Results will be added to Google Sheets.")
+				bot.Send(welcomeMsg)
+
+				// Send spreadsheet link as separate message and pin it
+				spreadsheetMsg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("📊 Spreadsheet: %s", spreadsheetURL))
+				sentSpreadsheetMsg, err := bot.Send(spreadsheetMsg)
+				if err == nil {
+					pinMsg := tgbotapi.PinChatMessageConfig{
+						ChatID:              update.Message.Chat.ID,
+						MessageID:           sentSpreadsheetMsg.MessageID,
+						DisableNotification: false,
+					}
+					bot.Send(pinMsg)
+				}
 			case "help":
 				helpText := "Commands:\n/start - Start the bot\n/help - Show this help\n\nJust send me an Airbnb search URL to scrape listings! Results will be automatically added to Google Sheets."
 				msg := tgbotapi.NewMessage(update.Message.Chat.ID, helpText)
@@ -180,32 +221,23 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 		}
 
 		// Send processing message
-		processingMsg := tgbotapi.NewMessage(update.Message.Chat.ID, "Processing your request... This may take a while.")
-		sentMsg, _ := bot.Send(processingMsg)
+		processingMsg := tgbotapi.NewMessage(update.Message.Chat.ID, "📝 Request received! Your request has been queued and will be processed shortly. You'll receive status updates as the scraping progresses.")
+		sentMsg, err := bot.Send(processingMsg)
+		if err != nil {
+			log.Printf("Error sending processing message: %v\n", err)
+			continue
+		}
 
-		// Perform scraping
-		filteredListings, allListings, scrapeErr := scrapeListings(url, maxPages, cfg)
-		if scrapeErr != nil {
-			errorMsg := tgbotapi.NewEditMessageText(update.Message.Chat.ID, sentMsg.MessageID, fmt.Sprintf("Error: %v", scrapeErr))
+		// Save request to database
+		req, err := database.CreateRequest(userID, sentMsg.MessageID, url)
+		if err != nil {
+			log.Printf("Error creating request: %v\n", err)
+			errorMsg := tgbotapi.NewEditMessageText(update.Message.Chat.ID, sentMsg.MessageID, fmt.Sprintf("❌ Error: Failed to create request: %v", err))
 			bot.Send(errorMsg)
 			continue
 		}
 
-		// Write to Google Sheets instead of sending via Telegram
-		writeErr := writer.AppendListings(filteredListings)
-		if writeErr != nil {
-			errorMsg := tgbotapi.NewEditMessageText(update.Message.Chat.ID, sentMsg.MessageID, 
-				fmt.Sprintf("Scraping completed: Found %d listings (before: %d), but failed to write to Google Sheets: %v", 
-					len(filteredListings), len(allListings), writeErr))
-			bot.Send(errorMsg)
-			continue
-		}
-
-		// Send success message
-		successMsg := tgbotapi.NewEditMessageText(update.Message.Chat.ID, sentMsg.MessageID,
-			fmt.Sprintf("✅ Successfully scraped and added %d listings to Google Sheets!\n\nFound %d listings before filtering.\n\nView spreadsheet: %s",
-				len(filteredListings), len(allListings), spreadsheetURL))
-		bot.Send(successMsg)
+		log.Printf("Created request ID %d for user %d\n", req.ID, userID)
 	}
 }
 

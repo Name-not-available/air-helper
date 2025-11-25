@@ -181,6 +181,98 @@ func (w *Writer) AppendListings(listings []models.Listing) error {
 	return nil
 }
 
+// CreateSheetAndWriteListings creates a new sheet and writes listings to it
+// Returns the sheet name that was created
+func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models.Listing) (string, error) {
+	// Sanitize sheet name (Google Sheets has restrictions)
+	sheetName = sanitizeSheetName(sheetName)
+	if len(sheetName) > 100 {
+		sheetName = sheetName[:100]
+	}
+
+	// Create the sheet
+	addSheetRequest := &sheets.AddSheetRequest{
+		Properties: &sheets.SheetProperties{
+			Title: sheetName,
+		},
+	}
+
+	batchUpdateRequest := &sheets.BatchUpdateSpreadsheetRequest{
+		Requests: []*sheets.Request{
+			{
+				AddSheet: addSheetRequest,
+			},
+		},
+	}
+
+	batchUpdateResp, err := w.service.Spreadsheets.BatchUpdate(w.spreadsheetID, batchUpdateRequest).Do()
+	if err != nil {
+		return "", fmt.Errorf("failed to create sheet: %w", err)
+	}
+
+	// Get the sheet ID from the response
+	var sheetID int64
+	if len(batchUpdateResp.Replies) > 0 && batchUpdateResp.Replies[0].AddSheet != nil {
+		sheetID = batchUpdateResp.Replies[0].AddSheet.Properties.SheetId
+	}
+
+	log.Printf("Created sheet '%s' with ID %d\n", sheetName, sheetID)
+
+	// Prepare data
+	var values [][]interface{}
+
+	// Add header row
+	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count"}
+	values = append(values, header)
+
+	// Add listing rows
+	for _, listing := range listings {
+		row := []interface{}{
+			listing.Title,
+			listing.URL,
+			listing.Price,
+			listing.Currency,
+			listing.Stars,
+			listing.ReviewCount,
+		}
+		values = append(values, row)
+	}
+
+	// Write to the new sheet
+	range_ := fmt.Sprintf("%s!A1", sheetName)
+	valueRange := &sheets.ValueRange{
+		Values: values,
+	}
+
+	_, err = w.service.Spreadsheets.Values.Update(w.spreadsheetID, range_, valueRange).
+		ValueInputOption("RAW").
+		Do()
+
+	if err != nil {
+		return "", fmt.Errorf("failed to write to sheet: %w", err)
+	}
+
+	log.Printf("Successfully wrote %d listings to sheet '%s'\n", len(listings), sheetName)
+	return sheetName, nil
+}
+
+// sanitizeSheetName removes invalid characters from sheet name
+func sanitizeSheetName(name string) string {
+	// Google Sheets sheet names cannot contain: / \ ? * [ ]
+	invalidChars := []string{"/", "\\", "?", "*", "[", "]"}
+	result := name
+	for _, char := range invalidChars {
+		result = strings.ReplaceAll(result, char, "_")
+	}
+	// Remove leading/trailing spaces
+	result = strings.TrimSpace(result)
+	// If empty after sanitization, use default
+	if result == "" {
+		result = "Sheet1"
+	}
+	return result
+}
+
 // ExtractSpreadsheetID extracts the spreadsheet ID from a Google Sheets URL
 func ExtractSpreadsheetID(url string) string {
 	// Handle various URL formats:
