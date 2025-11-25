@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -40,12 +41,15 @@ func main() {
 }
 
 // runCLIMode runs the scraper in CLI mode
-func runCLIMode(url, configPath string, maxPages int, spreadsheetURL, credentialsPath string) {
+func runCLIMode(urlStr, configPath string, maxPages int, spreadsheetURL, credentialsPath string) {
+	// Add currency=USD to URL
+	urlStr = addCurrencyToURL(urlStr)
+
 	// Load configuration
 	cfg := loadConfig(configPath)
 
 	// Perform scraping
-	filteredListings, allListings, err := scrapeListings(url, maxPages, cfg)
+	filteredListings, allListings, err := scrapeListings(urlStr, maxPages, cfg)
 	if err != nil {
 		log.Fatalf("Scraping failed: %v\n", err)
 	}
@@ -219,6 +223,9 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 			bot.Send(msg)
 			continue
 		}
+
+		// Add currency=USD to URL
+		url = addCurrencyToURL(url)
 
 		// Send processing message
 		processingMsg := tgbotapi.NewMessage(update.Message.Chat.ID, "📝 Request received! Your request has been queued and will be processed shortly. You'll receive status updates as the scraping progresses.")
@@ -499,4 +506,23 @@ func splitMessage(text string, maxLen int) []string {
 	}
 
 	return parts
+}
+
+// addCurrencyToURL adds ?currency=USD or &currency=USD to a URL
+// Always sets currency=USD, replacing any existing currency parameter
+func addCurrencyToURL(urlStr string) string {
+	// Parse the URL
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		// If parsing fails, return original URL
+		log.Printf("Warning: Failed to parse URL: %v\n", err)
+		return urlStr
+	}
+
+	// Always set currency=USD (will replace if it already exists)
+	query := parsedURL.Query()
+	query.Set("currency", "USD")
+	parsedURL.RawQuery = query.Encode()
+
+	return parsedURL.String()
 }
