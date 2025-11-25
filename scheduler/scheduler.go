@@ -265,4 +265,3 @@ func (s *Scheduler) sendStatusUpdate(messageID int, userID int64, text string) {
 		log.Printf("Error sending status update: %v\n", err)
 	}
 }
-

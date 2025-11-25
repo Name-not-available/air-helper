@@ -17,13 +17,26 @@ type RodScraper struct {
 
 // NewRodScraper creates a new RodScraper instance
 func NewRodScraper() (*RodScraper, error) {
+	// Get user data directory from environment or use default
+	// This should be mounted as a volume to use disk instead of memory
+	userDataDir := os.Getenv("BOT_DATA_DIR")
+	if userDataDir == "" {
+		userDataDir = "/tmp/bot-data" // Default to /tmp if not set
+	}
+	
+	// Create directory if it doesn't exist
+	if err := os.MkdirAll(userDataDir, 0755); err != nil {
+		log.Printf("Warning: Failed to create bot data directory %s: %v\n", userDataDir, err)
+		userDataDir = "" // Fall back to default if we can't create it
+	}
+
 	// Try to use system Chrome first, fallback to downloading Chromium
 	launcher := launcher.New().
 		Headless(true).
 		Set("disable-blink-features", "AutomationControlled").
 		NoSandbox(true).
 		Leakless(false). // Disable leakless to avoid antivirus issues
-		UserDataDir("").
+		UserDataDir(userDataDir).
 		// Additional flags for Linux compatibility
 		Set("disable-dev-shm-usage").
 		Set("disable-gpu").
