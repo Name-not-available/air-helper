@@ -13,8 +13,8 @@ import (
 	"airbnb-scraper/filter"
 	"airbnb-scraper/models"
 	"airbnb-scraper/parser"
-	"airbnb-scraper/scraper"
 	"airbnb-scraper/scheduler"
+	"airbnb-scraper/scraper"
 	"airbnb-scraper/sheets"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -246,14 +246,17 @@ func refreshEnvVars() {
 	// On Windows, we need to refresh environment variables from the system
 	// This is a workaround for PowerShell/CMD not refreshing env vars immediately
 	// Try PowerShell first (more reliable), then fall back to cmd
+	// On Linux/Unix systems (like Railway), environment variables are already available
 	cmd := exec.Command("powershell", "-Command", "Get-ChildItem Env: | ForEach-Object { \"$($_.Name)=$($_.Value)\" }")
 	output, err := cmd.Output()
 	if err != nil {
-		// Fallback to cmd
+		// Fallback to cmd (Windows)
 		cmd = exec.Command("cmd", "/c", "set")
 		output, err = cmd.Output()
 		if err != nil {
-			log.Printf("Warning: Failed to refresh environment variables: %v\n", err)
+			// On Linux/Unix, env vars are already available, so this is not an error
+			// Just log a debug message and continue
+			log.Printf("Note: Environment variable refresh skipped (likely running on Linux/Unix)\n")
 			return
 		}
 	}
@@ -346,12 +349,12 @@ func scrapeListings(url string, maxPages int, cfg *config.FilterConfig) ([]model
 func formatListingsConsole(listings []models.Listing) {
 	for i, listing := range listings {
 		fmt.Printf("\n%d. %s\n", i+1, listing.Title)
-		
+
 		// Link
 		if listing.URL != "" {
 			fmt.Printf("   Link: %s\n", listing.URL)
 		}
-		
+
 		// Price
 		if listing.Price > 0 {
 			currency := listing.Currency
@@ -376,13 +379,13 @@ func formatListingsConsole(listings []models.Listing) {
 		} else {
 			fmt.Printf("   Price: Not available\n")
 		}
-		
+
 		// Rating (stars)
 		if listing.Stars > 0 {
 			// Display stars with full precision (no rounding)
 			fmt.Printf("   Rating: %g\n", listing.Stars)
 		}
-		
+
 		// Review count
 		if listing.ReviewCount > 0 {
 			fmt.Printf("   Review count: %d\n", listing.ReviewCount)
@@ -393,26 +396,26 @@ func formatListingsConsole(listings []models.Listing) {
 // formatListingsTelegram formats listings for Telegram message
 func formatListingsTelegram(filteredListings, allListings []models.Listing) string {
 	var sb strings.Builder
-	
+
 	sb.WriteString(fmt.Sprintf("Found %d listings before filtering\n", len(allListings)))
 	sb.WriteString(fmt.Sprintf("Found %d listings after filtering\n\n", len(filteredListings)))
-	
+
 	if len(filteredListings) == 0 {
 		sb.WriteString("No listings match the filter criteria.")
 		return sb.String()
 	}
-	
+
 	sb.WriteString("Filtered Listings:\n")
 	sb.WriteString("==================\n\n")
-	
+
 	for i, listing := range filteredListings {
 		sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, listing.Title))
-		
+
 		// Link
 		if listing.URL != "" {
 			sb.WriteString(fmt.Sprintf("   Link: %s\n", listing.URL))
 		}
-		
+
 		// Price
 		if listing.Price > 0 {
 			currency := listing.Currency
@@ -437,21 +440,21 @@ func formatListingsTelegram(filteredListings, allListings []models.Listing) stri
 		} else {
 			sb.WriteString("   Price: Not available\n")
 		}
-		
+
 		// Rating (stars)
 		if listing.Stars > 0 {
 			// Display stars with full precision (no rounding)
 			sb.WriteString(fmt.Sprintf("   Rating: %g\n", listing.Stars))
 		}
-		
+
 		// Review count
 		if listing.ReviewCount > 0 {
 			sb.WriteString(fmt.Sprintf("   Review count: %d\n", listing.ReviewCount))
 		}
-		
+
 		sb.WriteString("\n")
 	}
-	
+
 	return sb.String()
 }
 
@@ -460,11 +463,11 @@ func splitMessage(text string, maxLen int) []string {
 	if len(text) <= maxLen {
 		return []string{text}
 	}
-	
+
 	var parts []string
 	lines := strings.Split(text, "\n")
 	var current strings.Builder
-	
+
 	for _, line := range lines {
 		if current.Len()+len(line)+1 > maxLen {
 			if current.Len() > 0 {
@@ -490,12 +493,10 @@ func splitMessage(text string, maxLen int) []string {
 			current.WriteString("\n")
 		}
 	}
-	
+
 	if current.Len() > 0 {
 		parts = append(parts, current.String())
 	}
-	
+
 	return parts
 }
-
-

@@ -65,13 +65,15 @@ func (db *DB) Close() error {
 
 // initSchema creates the necessary tables if they don't exist
 func (db *DB) initSchema() error {
-	// Create schema if it doesn't exist
+	// Try to create schema if it doesn't exist (but don't fail if we don't have permission)
+	// The schema should already exist, so this is just a safety check
 	_, err := db.conn.Exec(`CREATE SCHEMA IF NOT EXISTS telegram_bnb_helper`)
 	if err != nil {
-		return fmt.Errorf("failed to create schema: %w", err)
+		// If schema creation fails (e.g., permission denied), assume it already exists
+		log.Printf("Note: Could not create schema (may already exist): %v\n", err)
 	}
 
-	// Set search path
+	// Set search path to use the existing schema
 	_, err = db.conn.Exec(`SET search_path TO telegram_bnb_helper`)
 	if err != nil {
 		return fmt.Errorf("failed to set search path: %w", err)
