@@ -1,0 +1,9 @@
+filters:
+  min_reviews: 10
+  min_price: 0
+  max_price: 30000000
+  min_stars: 4.0
+
+
+
+
