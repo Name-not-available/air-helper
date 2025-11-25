@@ -200,7 +200,7 @@ func (s *Scheduler) processNextRequest() {
 	sheetName := fmt.Sprintf("Request_%d_%s", req.ID, time.Now().Format("20060102_150405"))
 
 	// Write to Google Sheets
-	createdSheetName, err := s.writer.CreateSheetAndWriteListings(sheetName, filteredListings)
+	createdSheetName, sheetID, err := s.writer.CreateSheetAndWriteListings(sheetName, filteredListings)
 	if err != nil {
 		log.Printf("Error writing to Google Sheets: %v\n", err)
 		s.handleRequestError(req, err)
@@ -218,13 +218,16 @@ func (s *Scheduler) processNextRequest() {
 		return
 	}
 
+	// Create URL that opens the specific sheet
+	sheetURL := s.createSheetURL(sheetID)
+
 	// Send success message
 	successMsg := fmt.Sprintf(
 		"✅ Successfully scraped and added %d listings to Google Sheets!\n\n"+
 			"Found %d listings before filtering.\n"+
 			"Pages scraped: %d\n\n"+
 			"View spreadsheet: %s",
-		len(filteredListings), len(allListings), len(htmlPages), s.spreadsheetURL)
+		len(filteredListings), len(allListings), len(htmlPages), sheetURL)
 	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, successMsg)
 }
 
@@ -253,6 +256,20 @@ func (s *Scheduler) scrapeWithUpdates(scraperInstance scraper.Scraper, url strin
 	}
 
 	return htmlPages, nil
+}
+
+// createSheetURL creates a URL that opens a specific sheet in the spreadsheet
+func (s *Scheduler) createSheetURL(sheetID int64) string {
+	// Extract spreadsheet ID from the base URL
+	spreadsheetID := sheets.ExtractSpreadsheetID(s.spreadsheetURL)
+	if spreadsheetID == "" {
+		// Fallback to original URL if we can't extract ID
+		return s.spreadsheetURL
+	}
+
+	// Create URL with gid parameter to open specific sheet
+	// Format: https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit#gid=SHEET_ID
+	return fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s/edit#gid=%d", spreadsheetID, sheetID)
 }
 
 // sendStatusUpdate sends a status update message to Telegram

@@ -182,8 +182,8 @@ func (w *Writer) AppendListings(listings []models.Listing) error {
 }
 
 // CreateSheetAndWriteListings creates a new sheet and writes listings to it
-// Returns the sheet name that was created
-func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models.Listing) (string, error) {
+// Returns the sheet name and sheet ID (gid) that was created
+func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models.Listing) (string, int64, error) {
 	// Sanitize sheet name (Google Sheets has restrictions)
 	sheetName = sanitizeSheetName(sheetName)
 	if len(sheetName) > 100 {
@@ -207,7 +207,7 @@ func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models
 
 	batchUpdateResp, err := w.service.Spreadsheets.BatchUpdate(w.spreadsheetID, batchUpdateRequest).Do()
 	if err != nil {
-		return "", fmt.Errorf("failed to create sheet: %w", err)
+		return "", 0, fmt.Errorf("failed to create sheet: %w", err)
 	}
 
 	// Get the sheet ID from the response
@@ -249,11 +249,11 @@ func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models
 		Do()
 
 	if err != nil {
-		return "", fmt.Errorf("failed to write to sheet: %w", err)
+		return "", 0, fmt.Errorf("failed to write to sheet: %w", err)
 	}
 
 	log.Printf("Successfully wrote %d listings to sheet '%s'\n", len(listings), sheetName)
-	return sheetName, nil
+	return sheetName, sheetID, nil
 }
 
 // sanitizeSheetName removes invalid characters from sheet name

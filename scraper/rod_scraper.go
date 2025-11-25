@@ -23,7 +23,7 @@ func NewRodScraper() (*RodScraper, error) {
 	if userDataDir == "" {
 		userDataDir = "/tmp/air-data" // Default to /tmp/air-data if not set
 	}
-	
+
 	// Create directory if it doesn't exist
 	if err := os.MkdirAll(userDataDir, 0755); err != nil {
 		log.Printf("Warning: Failed to create bot data directory %s: %v\n", userDataDir, err)
@@ -203,7 +203,3 @@ func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
 
 	return htmlPages, nil
 }
-
-
-
-
