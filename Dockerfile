@@ -1,6 +1,9 @@
 # Build stage
 FROM golang:1.22-alpine AS builder
 
+# Set GOTOOLCHAIN to allow automatic toolchain downloads if needed
+ENV GOTOOLCHAIN=auto
+
 # Install build dependencies
 RUN apk add --no-cache git
 
