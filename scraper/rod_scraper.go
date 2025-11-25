@@ -21,7 +21,7 @@ func NewRodScraper() (*RodScraper, error) {
 	// This should be mounted as a volume to use disk instead of memory
 	userDataDir := os.Getenv("BOT_DATA_DIR")
 	if userDataDir == "" {
-		userDataDir = "/tmp/bot-data" // Default to /tmp if not set
+		userDataDir = "/tmp/air-data" // Default to /tmp/air-data if not set
 	}
 	
 	// Create directory if it doesn't exist
