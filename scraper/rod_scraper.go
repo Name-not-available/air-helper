@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -164,9 +165,52 @@ func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
 
 	// Handle pagination
 	for pageCount < maxPages {
-		// Look for "Next" button or pagination link
-		nextButton, err := page.Timeout(5 * time.Second).Element("a[aria-label='Next'], button[aria-label='Next'], a[href*='items_offset']")
+		// Try multiple strategies to find the next page button/link
+		var nextButton *rod.Element
+		var err error
+		
+		// Strategy 1: Look for button with "Next" aria-label
+		nextButton, err = page.Timeout(3 * time.Second).Element("button[aria-label*='Next'], button[aria-label*='next']")
 		if err != nil {
+			// Strategy 2: Look for link with "Next" aria-label
+			nextButton, err = page.Timeout(3 * time.Second).Element("a[aria-label*='Next'], a[aria-label*='next']")
+		}
+		if err != nil {
+			// Strategy 3: Look for pagination button with arrow icon
+			nextButton, err = page.Timeout(3 * time.Second).Element("button[data-testid*='pagination'], a[data-testid*='pagination']")
+		}
+		if err != nil {
+			// Strategy 4: Look for any button/link containing "next" in text or aria-label (case insensitive)
+			nextButton, err = page.Timeout(3 * time.Second).Element("button, a")
+			if err == nil {
+				// Check if any button has "next" in its text or aria-label
+				buttons, _ := page.Elements("button, a")
+				nextButton = nil
+				for _, btn := range buttons {
+					text, _ := btn.Text()
+					ariaLabelPtr, _ := btn.Attribute("aria-label")
+					ariaLabel := ""
+					if ariaLabelPtr != nil {
+						ariaLabel = *ariaLabelPtr
+					}
+					if (strings.Contains(strings.ToLower(text), "next") || 
+						strings.Contains(strings.ToLower(ariaLabel), "next")) &&
+						!strings.Contains(strings.ToLower(text), "previous") &&
+						!strings.Contains(strings.ToLower(ariaLabel), "previous") {
+						visible, _ := btn.Visible()
+						if visible {
+							nextButton = btn
+							break
+						}
+					}
+				}
+				if nextButton == nil {
+					err = fmt.Errorf("no next button found")
+				}
+			}
+		}
+		
+		if err != nil || nextButton == nil {
 			// No next button found, stop pagination
 			log.Printf("No more pages found after page %d\n", pageCount)
 			break
@@ -179,16 +223,24 @@ func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
 			break
 		}
 
+		// Scroll to the button to ensure it's in view
+		nextButton.ScrollIntoView()
+
 		// Click next button
 		if err := nextButton.Click("left", 1); err != nil {
 			log.Printf("Failed to click next button: %v\n", err)
 			break
 		}
 
-		// Wait for new content to load
+		// Wait for new content to load - wait longer for dynamic content
 		page.WaitLoad()
-		time.Sleep(3 * time.Second)
-		page.Timeout(10 * time.Second).MustWaitStable()
+		time.Sleep(4 * time.Second) // Increased wait time for content to load
+		
+		// Wait for the page to stabilize (content has changed)
+		page.Timeout(15 * time.Second).MustWaitStable()
+		
+		// Additional wait to ensure listings are rendered
+		time.Sleep(2 * time.Second)
 
 		// Get HTML content
 		html, err := page.HTML()
@@ -196,12 +248,28 @@ func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
 			log.Printf("Failed to get HTML for page %d: %v\n", pageCount+1, err)
 			break
 		}
+		
+		// Check if we got the same content (simple check - compare HTML length)
+		// This is a basic check, but if HTML is identical, we're not getting new content
+		if len(htmlPages) > 0 && len(html) == len(htmlPages[len(htmlPages)-1]) {
+			log.Printf("Warning: Page %d HTML length matches previous page, might be duplicate content\n", pageCount+1)
+		}
+		
 		htmlPages = append(htmlPages, html)
 		pageCount++
-		log.Printf("Scraped page %d/%d\n", pageCount, maxPages)
+		log.Printf("Scraped page %d/%d (HTML size: %d bytes)\n", pageCount, maxPages, len(html))
 	}
 
 	log.Printf("Scraping completed. Total pages scraped: %d (requested: %d)\n", len(htmlPages), maxPages)
+	
+	// Try to detect total pages available (if shown on page)
+	totalPagesText, err := page.Element("span, div")
+	if err == nil {
+		// Look for pagination info that might show "Page X of Y" or similar
+		allText, _ := page.HTML()
+		// This is a simple check - in a real scenario, you'd parse the pagination element
+		log.Printf("Note: Check page HTML for pagination info to determine total pages available\n")
+	}
 
 	if len(htmlPages) == 0 {
 		log.Println("Warning: No HTML pages collected.")

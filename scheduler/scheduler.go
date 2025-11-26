@@ -153,8 +153,11 @@ func (s *Scheduler) processNextRequest() {
 			log.Printf("Warning: Failed to parse page %d: %v\n", i+1, err)
 			continue
 		}
+		log.Printf("Parsed page %d: found %d listings\n", i+1, len(listings))
 		allListings = append(allListings, listings...)
 	}
+	
+	log.Printf("Total listings parsed from all pages: %d\n", len(allListings))
 
 	if len(allListings) == 0 {
 		err := fmt.Errorf("no listings found in the scraped HTML")
