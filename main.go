@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"airbnb-scraper/config"
 	"airbnb-scraper/db"
@@ -81,7 +82,16 @@ func runCLIMode(urlStr, configPath string, maxPages int, spreadsheetURL, credent
 		return
 	}
 
-	if err := writer.WriteListings(filteredListings, true); err != nil {
+	// Format filter information for CLI mode
+	filterInfo := fmt.Sprintf("Min Reviews: %d, Min Price: %.2f, Max Price: %.2f, Min Stars: %.2f",
+		cfg.Filters.MinReviews, cfg.Filters.MinPrice, cfg.Filters.MaxPrice, cfg.Filters.MinStars)
+
+	// Create a temporary sheet name for CLI mode
+	sheetName := fmt.Sprintf("CLI_%s", time.Now().Format("20060102_150405"))
+	
+	// Use CreateSheetAndWriteListings to insert at the beginning
+	_, _, err = writer.CreateSheetAndWriteListings(sheetName, filteredListings, urlStr, filterInfo)
+	if err != nil {
 		log.Printf("Warning: Failed to write to Google Sheets: %v\n", err)
 	} else {
 		fmt.Printf("\nSuccessfully wrote %d listings to Google Sheets\n", len(filteredListings))

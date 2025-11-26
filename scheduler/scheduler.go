@@ -199,8 +199,12 @@ func (s *Scheduler) processNextRequest() {
 	// Create sheet name from request ID and timestamp
 	sheetName := fmt.Sprintf("Request_%d_%s", req.ID, time.Now().Format("20060102_150405"))
 
-	// Write to Google Sheets
-	createdSheetName, sheetID, err := s.writer.CreateSheetAndWriteListings(sheetName, filteredListings)
+	// Format filter information
+	filterInfo := fmt.Sprintf("Min Reviews: %d, Min Price: %.2f, Max Price: %.2f, Min Stars: %.2f",
+		cfg.Filters.MinReviews, cfg.Filters.MinPrice, cfg.Filters.MaxPrice, cfg.Filters.MinStars)
+
+	// Write to Google Sheets (sheet will be inserted at the beginning)
+	createdSheetName, sheetID, err := s.writer.CreateSheetAndWriteListings(sheetName, filteredListings, req.URL, filterInfo)
 	if err != nil {
 		log.Printf("Error writing to Google Sheets: %v\n", err)
 		s.handleRequestError(req, err)
