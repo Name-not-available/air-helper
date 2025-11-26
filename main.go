@@ -105,6 +105,9 @@ var allowedUserIDs = map[int64]bool{
 	425120436: true,
 }
 
+// pendingConfigInput tracks which config type a user is currently entering a value for
+var pendingConfigInput = make(map[int64]string)
+
 // handleCallbackQuery handles callback queries from inline keyboard buttons
 func handleCallbackQuery(bot *tgbotapi.BotAPI, database *db.DB, callback *tgbotapi.CallbackQuery) {
 	userID := callback.From.ID
@@ -129,8 +132,9 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, database *db.DB, callback *tgbota
 	} else if strings.HasPrefix(data, "input|") {
 		// Format: input|configType
 		configType := strings.TrimPrefix(data, "input|")
+		// Store which config type this user is entering
+		pendingConfigInput[userID] = configType
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Please enter the new value for %s (as a number):", configType)))
-		// Store that user is entering custom value (we'll check for numeric input in message handler)
 	}
 }
 
@@ -392,9 +396,16 @@ func handleSetConfigValue(bot *tgbotapi.BotAPI, database *db.DB, chatID int64, u
 		),
 	)
 
-	editMsg := tgbotapi.NewEditMessageText(chatID, messageID, configText)
-	editMsg.ReplyMarkup = &keyboard
-	bot.Send(editMsg)
+	// If messageID is 0, send a new message instead of editing
+	if messageID == 0 {
+		msg := tgbotapi.NewMessage(chatID, configText)
+		msg.ReplyMarkup = keyboard
+		bot.Send(msg)
+	} else {
+		editMsg := tgbotapi.NewEditMessageText(chatID, messageID, configText)
+		editMsg.ReplyMarkup = &keyboard
+		bot.Send(editMsg)
+	}
 }
 
 // isNumeric checks if a string is numeric
@@ -602,15 +613,28 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 			continue
 		}
 
-		// Handle custom config value input - check if message is a number
-		// This is a simple heuristic: if it's a number and not a URL, it might be a config value
+		// Handle custom config value input - check if user has a pending config input
 		text := strings.TrimSpace(update.Message.Text)
+		if configType, hasPending := pendingConfigInput[userID]; hasPending {
+			// User is entering a value for a specific config
+			if isNumeric(text) {
+				// Clear the pending input
+				delete(pendingConfigInput, userID)
+				// Update the config value directly
+				handleSetConfigValue(bot, database, update.Message.Chat.ID, userID, configType, text, 0)
+			} else {
+				// Invalid input, clear pending and show error
+				delete(pendingConfigInput, userID)
+				msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("❌ Invalid number: %s. Please enter a valid number.", text))
+				bot.Send(msg)
+			}
+			continue
+		}
+
+		// If no pending input, check if it's a number (might be accidental)
+		// Only show menu if it's clearly not a URL
 		if isNumeric(text) && !strings.HasPrefix(text, "http://") && !strings.HasPrefix(text, "https://") {
-			// Check if we can parse it as a config value
-			// We'll try to update the last config type the user was viewing
-			// For simplicity, we'll show a menu to select which config to update
-			// Or we can store the last config type in a map (but that's more complex)
-			// For now, let's just check if it's a valid number and ask which config
+			// Show menu to select which config to update (fallback for when user just types a number)
 			handleCustomConfigInput(bot, database, update.Message.Chat.ID, userID, text)
 			continue
 		}
