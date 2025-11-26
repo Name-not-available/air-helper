@@ -1,6 +1,6 @@
 package models
 
-// Listing represents an Airbnb listing
+// Listing represents a Bnb listing
 type Listing struct {
 	Title       string
 	Price       float64

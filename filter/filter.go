@@ -1,8 +1,8 @@
 package filter
 
 import (
-	"airbnb-scraper/config"
-	"airbnb-scraper/models"
+	"bnb-fetcher/config"
+	"bnb-fetcher/models"
 )
 
 // Filter applies filter criteria to listings

@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"airbnb-scraper/models"
+	"bnb-fetcher/models"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -28,7 +28,7 @@ func (p *Parser) ParseHTML(htmlContent string) ([]models.Listing, error) {
 
 	var listings []models.Listing
 
-	// Airbnb uses various selectors for listings
+	// Bnb uses various selectors for listings
 	// Try common selectors - these may need adjustment based on actual HTML structure
 	doc.Find("[data-testid='listing-card'], ._14n5tpj, [itemprop='itemListElement']").Each(func(i int, s *goquery.Selection) {
 		// Check if this listing is in "Available for similar dates" section

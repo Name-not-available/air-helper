@@ -17,7 +17,7 @@ RUN go mod download
 COPY . .
 
 # Build the application
-RUN CGO_ENABLED=0 GOOS=linux go build -o airbnb-scraper .
+RUN CGO_ENABLED=0 GOOS=linux go build -o bnb-fetcher .
 
 # Runtime stage
 FROM alpine:latest
@@ -42,8 +42,8 @@ ENV CHROMIUM_FLAGS="--no-sandbox --headless --disable-gpu --disable-dev-shm-usag
 WORKDIR /app
 
 # Copy binary from builder
-COPY --from=builder /app/airbnb-scraper .
+COPY --from=builder /app/bnb-fetcher .
 
 # Run the application
-CMD ["./airbnb-scraper"]
+CMD ["./bnb-fetcher"]
 

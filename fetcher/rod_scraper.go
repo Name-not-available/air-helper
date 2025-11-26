@@ -1,4 +1,4 @@
-package scraper
+package fetcher
 
 import (
 	"fmt"
@@ -11,18 +11,18 @@ import (
 	"github.com/go-rod/rod/lib/launcher"
 )
 
-// RodScraper implements the Scraper interface using rod (headless browser)
-type RodScraper struct {
+// RodFetcher implements the Fetcher interface using rod (headless browser)
+type RodFetcher struct {
 	browser *rod.Browser
 }
 
-// NewRodScraper creates a new RodScraper instance
-func NewRodScraper() (*RodScraper, error) {
+// NewRodFetcher creates a new RodFetcher instance
+func NewRodFetcher() (*RodFetcher, error) {
 	// Get user data directory from environment or use default
 	// This should be mounted as a volume to use disk instead of memory
 	userDataDir := os.Getenv("BOT_DATA_DIR")
 	if userDataDir == "" {
-		userDataDir = "/tmp/air-data" // Default to /tmp/air-data if not set
+		userDataDir = "/tmp/bnb-data" // Default to /tmp/bnb-data if not set
 	}
 
 	// Create directory if it doesn't exist
@@ -118,28 +118,28 @@ func NewRodScraper() (*RodScraper, error) {
 		return nil, fmt.Errorf("failed to connect to browser: %w", err)
 	}
 
-	return &RodScraper{
+	return &RodFetcher{
 		browser: browser,
 	}, nil
 }
 
 // Close closes the browser
-func (rs *RodScraper) Close() error {
-	if rs.browser != nil {
-		return rs.browser.Close()
+func (rf *RodFetcher) Close() error {
+	if rf.browser != nil {
+		return rf.browser.Close()
 	}
 	return nil
 }
 
-// Scrape implements the Scraper interface
-func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
+// Fetch implements the Fetcher interface
+func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 	var htmlPages []string
 	pageCount := 0
 
-	log.Printf("Starting scrape with maxPages: %d\n", maxPages)
+	log.Printf("Starting fetch with maxPages: %d\n", maxPages)
 
 	// Create a new page
-	page := rs.browser.MustPage()
+	page := rf.browser.MustPage()
 	defer page.Close()
 
 	// Navigate to the URL
@@ -159,16 +159,16 @@ func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HTML: %w", err)
 	}
-	htmlPages = append(htmlPages, html)
-	pageCount++
-	log.Printf("Scraped page %d/%d\n", pageCount, maxPages)
+		htmlPages = append(htmlPages, html)
+		pageCount++
+		log.Printf("Fetched page %d/%d\n", pageCount, maxPages)
 
 	// Handle pagination
 	for pageCount < maxPages {
 		// Try multiple strategies to find the next page button/link
 		var nextButton *rod.Element
 		var err error
-		
+
 		// Strategy 1: Look for button with "Next" aria-label
 		nextButton, err = page.Timeout(3 * time.Second).Element("button[aria-label*='Next'], button[aria-label*='next']")
 		if err != nil {
@@ -193,7 +193,7 @@ func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
 					if ariaLabelPtr != nil {
 						ariaLabel = *ariaLabelPtr
 					}
-					if (strings.Contains(strings.ToLower(text), "next") || 
+					if (strings.Contains(strings.ToLower(text), "next") ||
 						strings.Contains(strings.ToLower(ariaLabel), "next")) &&
 						!strings.Contains(strings.ToLower(text), "previous") &&
 						!strings.Contains(strings.ToLower(ariaLabel), "previous") {
@@ -209,7 +209,7 @@ func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
 				}
 			}
 		}
-		
+
 		if err != nil || nextButton == nil {
 			// No next button found, stop pagination
 			log.Printf("No more pages found after page %d\n", pageCount)
@@ -225,20 +225,19 @@ func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
 
 		// Scroll to the button to ensure it's in view
 		nextButton.ScrollIntoView()
+		time.Sleep(1 * time.Second) // Wait after scrolling
 
-		// Click next button
-		if err := nextButton.Click("left", 1); err != nil {
-			log.Printf("Failed to click next button: %v\n", err)
-			break
-		}
+		// Use JavaScript click which is more reliable and doesn't timeout
+		// Get the element's selector or use a more reliable click method
+		nextButton.MustClick()
 
 		// Wait for new content to load - wait longer for dynamic content
 		page.WaitLoad()
 		time.Sleep(4 * time.Second) // Increased wait time for content to load
-		
+
 		// Wait for the page to stabilize (content has changed)
 		page.Timeout(15 * time.Second).MustWaitStable()
-		
+
 		// Additional wait to ensure listings are rendered
 		time.Sleep(2 * time.Second)
 
@@ -248,19 +247,19 @@ func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
 			log.Printf("Failed to get HTML for page %d: %v\n", pageCount+1, err)
 			break
 		}
-		
+
 		// Check if we got the same content (simple check - compare HTML length)
 		// This is a basic check, but if HTML is identical, we're not getting new content
 		if len(htmlPages) > 0 && len(html) == len(htmlPages[len(htmlPages)-1]) {
 			log.Printf("Warning: Page %d HTML length matches previous page, might be duplicate content\n", pageCount+1)
 		}
-		
+
 		htmlPages = append(htmlPages, html)
 		pageCount++
-		log.Printf("Scraped page %d/%d (HTML size: %d bytes)\n", pageCount, maxPages, len(html))
+		log.Printf("Fetched page %d/%d (HTML size: %d bytes)\n", pageCount, maxPages, len(html))
 	}
 
-	log.Printf("Scraping completed. Total pages scraped: %d (requested: %d)\n", len(htmlPages), maxPages)
+	log.Printf("Fetching completed. Total pages fetched: %d (requested: %d)\n", len(htmlPages), maxPages)
 
 	if len(htmlPages) == 0 {
 		log.Println("Warning: No HTML pages collected.")

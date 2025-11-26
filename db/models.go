@@ -33,7 +33,7 @@ type Request struct {
 	UpdatedAt          time.Time
 }
 
-// Listing represents a scraped listing stored in database
+// Listing represents a fetched listing stored in database
 type Listing struct {
 	ID          int
 	RequestID   int

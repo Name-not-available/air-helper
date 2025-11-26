@@ -1,4 +1,4 @@
-package scraper
+package fetcher
 
 import (
 	"fmt"
@@ -9,54 +9,54 @@ import (
 	"github.com/gocolly/colly/v2"
 )
 
-// CollyScraper implements the Scraper interface using colly
-type CollyScraper struct {
+// CollyFetcher implements the Fetcher interface using colly
+type CollyFetcher struct {
 	collector *colly.Collector
 }
 
-// NewCollyScraper creates a new CollyScraper instance
-func NewCollyScraper() *CollyScraper {
+// NewCollyFetcher creates a new CollyFetcher instance
+func NewCollyFetcher() *CollyFetcher {
 	c := colly.NewCollector(
 		colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
 	)
 
 	// Set rate limiting
 	c.Limit(&colly.LimitRule{
-		DomainGlob:  "*airbnb.*",
+		DomainGlob:  "*bnb.*",
 		Parallelism: 1,
 		Delay:       2 * time.Second,
 	})
 
 	// Set error handler
 	c.OnError(func(r *colly.Response, err error) {
-		log.Printf("Error scraping %s: %v\n", r.Request.URL, err)
+		log.Printf("Error fetching %s: %v\n", r.Request.URL, err)
 	})
 
-	return &CollyScraper{
+	return &CollyFetcher{
 		collector: c,
 	}
 }
 
-// Scrape implements the Scraper interface
-func (cs *CollyScraper) Scrape(url string, maxPages int) ([]string, error) {
+// Fetch implements the Fetcher interface
+func (cf *CollyFetcher) Fetch(url string, maxPages int) ([]string, error) {
 	var htmlPages []string
 	pageCount := 0
 	visited := make(map[string]bool)
 
 	// Set up callback to collect HTML from response
-	cs.collector.OnResponse(func(r *colly.Response) {
+		cf.collector.OnResponse(func(r *colly.Response) {
 		htmlPages = append(htmlPages, string(r.Body))
 		pageCount++
 		visited[r.Request.URL.String()] = true
 	})
 
 	// Visit the initial URL
-	if err := cs.collector.Visit(url); err != nil {
+	if err := cf.collector.Visit(url); err != nil {
 		return nil, fmt.Errorf("failed to visit URL: %w", err)
 	}
 
 	// Handle pagination - look for next page links
-	cs.collector.OnHTML("a[aria-label='Next'], a[href*='items_offset']", func(e *colly.HTMLElement) {
+	cf.collector.OnHTML("a[aria-label='Next'], a[href*='items_offset']", func(e *colly.HTMLElement) {
 		if pageCount >= maxPages {
 			return
 		}
@@ -68,16 +68,16 @@ func (cs *CollyScraper) Scrape(url string, maxPages int) ([]string, error) {
 			}
 			// Avoid visiting the same URL twice
 			if !visited[nextURL] {
-				cs.collector.Visit(nextURL)
+				cf.collector.Visit(nextURL)
 			}
 		}
 	})
 
 	// Wait for all requests to complete
-	cs.collector.Wait()
+	cf.collector.Wait()
 
 	if len(htmlPages) == 0 {
-		log.Println("Warning: No HTML pages collected. Airbnb may be using JavaScript rendering.")
+		log.Println("Warning: No HTML pages collected. Bnb may be using JavaScript rendering.")
 		log.Println("Consider upgrading to a headless browser implementation.")
 	}
 

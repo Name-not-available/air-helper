@@ -6,13 +6,13 @@ import (
 	"log"
 	"time"
 
-	"airbnb-scraper/config"
-	"airbnb-scraper/db"
-	"airbnb-scraper/filter"
-	"airbnb-scraper/models"
-	"airbnb-scraper/parser"
-	"airbnb-scraper/scraper"
-	"airbnb-scraper/sheets"
+	"bnb-fetcher/config"
+	"bnb-fetcher/db"
+	"bnb-fetcher/fetcher"
+	"bnb-fetcher/filter"
+	"bnb-fetcher/models"
+	"bnb-fetcher/parser"
+	"bnb-fetcher/sheets"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -109,27 +109,27 @@ func (s *Scheduler) processNextRequest() {
 
 	// Create browser only when needed (on-demand)
 	log.Printf("Initializing browser for request ID %d...\n", req.ID)
-	rodScraper, err := scraper.NewRodScraper()
+	rodFetcher, err := fetcher.NewRodFetcher()
 	if err != nil {
-		log.Printf("Error creating scraper: %v\n", err)
+		log.Printf("Error creating fetcher: %v\n", err)
 		s.handleRequestError(req, err)
 		return
 	}
 	defer func() {
 		log.Printf("Closing browser after request ID %d...\n", req.ID)
-		if err := rodScraper.Close(); err != nil {
+		if err := rodFetcher.Close(); err != nil {
 			log.Printf("Warning: Failed to close browser: %v\n", err)
 		} else {
 			log.Printf("Browser closed successfully for request ID %d\n", req.ID)
 		}
 	}()
 
-	scraperInstance := scraper.Scraper(rodScraper)
+	fetcherInstance := fetcher.Fetcher(rodFetcher)
 
-	// Scrape pages with status updates
-	// We'll scrape page by page and send updates
+	// Fetch pages with status updates
+	// We'll fetch page by page and send updates
 	log.Printf("Using maxPages from user config: %d\n", userConfig.MaxPages)
-	htmlPages, err := s.scrapeWithUpdates(scraperInstance, req.URL, userConfig.MaxPages, req.TelegramMessageID, req.UserID)
+	htmlPages, err := s.fetchWithUpdates(fetcherInstance, req.URL, userConfig.MaxPages, req.TelegramMessageID, req.UserID)
 	if err != nil {
 		log.Printf("Error scraping: %v\n", err)
 		s.handleRequestError(req, err)
@@ -160,7 +160,7 @@ func (s *Scheduler) processNextRequest() {
 	log.Printf("Total listings parsed from all pages: %d\n", len(allListings))
 
 	if len(allListings) == 0 {
-		err := fmt.Errorf("no listings found in the scraped HTML")
+		err := fmt.Errorf("no listings found in the fetched HTML")
 		log.Printf("Error: %v\n", err)
 		s.handleRequestError(req, err)
 		return
@@ -231,9 +231,9 @@ func (s *Scheduler) processNextRequest() {
 
 	// Send success message
 	successMsg := fmt.Sprintf(
-		"✅ Successfully scraped and added %d listings to Google Sheets!\n\n"+
+		"✅ Successfully fetched and added %d listings to Google Sheets!\n\n"+
 			"Found %d listings before filtering.\n"+
-			"Pages scraped: %d\n\n"+
+			"Pages fetched: %d\n\n"+
 			"View spreadsheet: %s",
 		len(filteredListings), len(allListings), len(htmlPages), sheetURL)
 	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, successMsg)
@@ -249,18 +249,18 @@ func (s *Scheduler) handleRequestError(req *db.Request, err error) {
 	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, errorMsg)
 }
 
-// scrapeWithUpdates scrapes pages and sends status updates
-func (s *Scheduler) scrapeWithUpdates(scraperInstance scraper.Scraper, url string, maxPages int, messageID int, userID int64) ([]string, error) {
-	// For now, use the standard scraper and send updates based on results
-	// In a more advanced version, we could modify the scraper to accept callbacks
-	htmlPages, err := scraperInstance.Scrape(url, maxPages)
+// fetchWithUpdates fetches pages and sends status updates
+func (s *Scheduler) fetchWithUpdates(fetcherInstance fetcher.Fetcher, url string, maxPages int, messageID int, userID int64) ([]string, error) {
+	// For now, use the standard fetcher and send updates based on results
+	// In a more advanced version, we could modify the fetcher to accept callbacks
+	htmlPages, err := fetcherInstance.Fetch(url, maxPages)
 	if err != nil {
 		return nil, err
 	}
 
 	// Send status updates for each page
 	for i := range htmlPages {
-		s.sendStatusUpdate(messageID, userID, fmt.Sprintf("📄 Page %d/%d scraped", i+1, len(htmlPages)))
+		s.sendStatusUpdate(messageID, userID, fmt.Sprintf("📄 Page %d/%d fetched", i+1, len(htmlPages)))
 	}
 
 	return htmlPages, nil

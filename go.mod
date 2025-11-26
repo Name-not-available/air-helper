@@ -1,4 +1,4 @@
-module airbnb-scraper
+module bnb-fetcher
 
 go 1.24.0
 

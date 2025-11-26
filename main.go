@@ -11,23 +11,23 @@ import (
 	"strings"
 	"time"
 
-	"airbnb-scraper/config"
-	"airbnb-scraper/db"
-	"airbnb-scraper/filter"
-	"airbnb-scraper/models"
-	"airbnb-scraper/parser"
-	"airbnb-scraper/scheduler"
-	"airbnb-scraper/scraper"
-	"airbnb-scraper/sheets"
+	"bnb-fetcher/config"
+	"bnb-fetcher/db"
+	"bnb-fetcher/fetcher"
+	"bnb-fetcher/filter"
+	"bnb-fetcher/models"
+	"bnb-fetcher/parser"
+	"bnb-fetcher/scheduler"
+	"bnb-fetcher/sheets"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
 func main() {
 	// Parse command line arguments
-	url := flag.String("url", "", "Airbnb search URL (optional, if not provided, runs as Telegram bot)")
+	url := flag.String("url", "", "Bnb search URL (optional, if not provided, runs as Telegram bot)")
 	configPath := flag.String("config", "config.yaml", "Path to configuration file")
-	maxPages := flag.Int("pages", 5, "Maximum number of pages to scrape")
+	maxPages := flag.Int("pages", 5, "Maximum number of pages to fetch")
 	spreadsheetURL := flag.String("spreadsheet", "https://docs.google.com/spreadsheets/d/1FoGJ6ZzDIfFv3ZZ6_qWSn8hzEk4tlUEAT7ClQKYRmFo/edit?usp=sharing", "Google Sheets URL")
 	credentialsPath := flag.String("credentials", "", "Path to Google service account credentials JSON file (or use GOOGLE_SHEETS_CREDENTIALS env var)")
 	flag.Parse()
@@ -42,7 +42,7 @@ func main() {
 	runTelegramBot(*configPath, *maxPages, *spreadsheetURL, *credentialsPath)
 }
 
-// runCLIMode runs the scraper in CLI mode
+// runCLIMode runs the fetcher in CLI mode
 func runCLIMode(urlStr, configPath string, maxPages int, spreadsheetURL, credentialsPath string) {
 	// Add currency=USD to URL
 	urlStr = addCurrencyToURL(urlStr)
@@ -50,8 +50,8 @@ func runCLIMode(urlStr, configPath string, maxPages int, spreadsheetURL, credent
 	// Load configuration
 	cfg := loadConfig(configPath)
 
-	// Perform scraping
-	filteredListings, allListings, err := scrapeListings(urlStr, maxPages, cfg)
+	// Perform fetching
+	filteredListings, allListings, err := fetchListings(urlStr, maxPages, cfg)
 	if err != nil {
 		log.Fatalf("Scraping failed: %v\n", err)
 	}
@@ -441,7 +441,7 @@ func handleCustomConfigInput(bot *tgbotapi.BotAPI, database *db.DB, chatID int64
 	bot.Send(msg)
 }
 
-// runTelegramBot runs the scraper as a Telegram bot
+// runTelegramBot runs the fetcher as a Telegram bot
 func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentialsPath string) {
 	// Refresh environment variables (Windows-specific)
 	refreshEnvVars()
@@ -566,7 +566,7 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 				}
 
 				// Send welcome message with persistent keyboard
-				welcomeMsg := tgbotapi.NewMessage(update.Message.Chat.ID, "Welcome! Send me an Airbnb search URL to scrape listings. Results will be added to Google Sheets.")
+				welcomeMsg := tgbotapi.NewMessage(update.Message.Chat.ID, "Welcome! Send me a Bnb search URL to fetch listings. Results will be added to Google Sheets.")
 				welcomeMsg.ReplyMarkup = configKeyboard
 				bot.Send(welcomeMsg)
 
@@ -582,7 +582,7 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 					bot.Send(pinMsg)
 				}
 			case "help":
-				helpText := "Commands:\n/start - Start the bot\n/help - Show this help\n/config - Configure filter settings\n\nJust send me an Airbnb search URL to scrape listings! Results will be automatically added to Google Sheets."
+				helpText := "Commands:\n/start - Start the bot\n/help - Show this help\n/config - Configure filter settings\n\nJust send me a Bnb search URL to fetch listings! Results will be automatically added to Google Sheets."
 				msg := tgbotapi.NewMessage(update.Message.Chat.ID, helpText)
 				msg.ReplyMarkup = configKeyboard
 				bot.Send(msg)
@@ -642,7 +642,7 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 		// Handle URL messages
 		url := strings.TrimSpace(update.Message.Text)
 		if url == "" {
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Please send me an Airbnb search URL.")
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Please send me a Bnb search URL.")
 			bot.Send(msg)
 			continue
 		}
@@ -735,24 +735,24 @@ func loadConfig(configPath string) *config.FilterConfig {
 	return cfg
 }
 
-// scrapeListings performs the scraping and filtering logic
-func scrapeListings(url string, maxPages int, cfg *config.FilterConfig) ([]models.Listing, []models.Listing, error) {
-	// Create scraper (using headless browser for JS-rendered content)
-	rodScraper, err := scraper.NewRodScraper()
+// fetchListings performs the fetching and filtering logic
+func fetchListings(url string, maxPages int, cfg *config.FilterConfig) ([]models.Listing, []models.Listing, error) {
+	// Create fetcher (using headless browser for JS-rendered content)
+	rodFetcher, err := fetcher.NewRodFetcher()
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create scraper: %w", err)
+		return nil, nil, fmt.Errorf("failed to create fetcher: %w", err)
 	}
 	defer func() {
-		if err := rodScraper.Close(); err != nil {
+		if err := rodFetcher.Close(); err != nil {
 			log.Printf("Warning: Failed to close browser: %v\n", err)
 		}
 	}()
-	scraperInstance := scraper.Scraper(rodScraper)
+	fetcherInstance := fetcher.Fetcher(rodFetcher)
 
-	// Scrape pages
-	htmlPages, err := scraperInstance.Scrape(url, maxPages)
+	// Fetch pages
+	htmlPages, err := fetcherInstance.Fetch(url, maxPages)
 	if err != nil {
-		return nil, nil, fmt.Errorf("scraping failed: %w", err)
+		return nil, nil, fmt.Errorf("fetching failed: %w", err)
 	}
 
 	if len(htmlPages) == 0 {
@@ -773,7 +773,7 @@ func scrapeListings(url string, maxPages int, cfg *config.FilterConfig) ([]model
 	}
 
 	if len(allListings) == 0 {
-		return nil, nil, fmt.Errorf("no listings found in the scraped HTML")
+		return nil, nil, fmt.Errorf("no listings found in the fetched HTML")
 	}
 
 	// Apply filters
