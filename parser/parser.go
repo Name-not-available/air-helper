@@ -35,6 +35,10 @@ func (p *Parser) ParseHTML(htmlContent string) ([]models.Listing, error) {
 		if p.isInSimilarDatesSection(s) {
 			return
 		}
+		// Check if this listing is inside a div with the specific background color style
+		if p.isInFullBleedSection(s) {
+			return
+		}
 		listing := p.extractListing(s)
 		if listing != nil {
 			listings = append(listings, *listing)
@@ -46,6 +50,10 @@ func (p *Parser) ParseHTML(htmlContent string) ([]models.Listing, error) {
 		doc.Find("div[data-listing-id], a[href*='/rooms/']").Each(func(i int, s *goquery.Selection) {
 			// Check if this listing is in "Available for similar dates" section
 			if p.isInSimilarDatesSection(s) {
+				return
+			}
+			// Check if this listing is inside a div with the specific background color style
+			if p.isInFullBleedSection(s) {
 				return
 			}
 			listing := p.extractListing(s)
@@ -96,6 +104,26 @@ func (p *Parser) isInSimilarDatesSection(s *goquery.Selection) bool {
 			if parent.Find("h1:contains('similar'), h2:contains('similar'), h3:contains('similar')").Length() > 0 {
 				return true
 			}
+		}
+
+		parent = parent.Parent()
+	}
+	return false
+}
+
+// isInFullBleedSection checks if a listing is within a div with the specific background color style
+func (p *Parser) isInFullBleedSection(s *goquery.Selection) bool {
+	// Check parent elements for the specific style attribute
+	parent := s.Parent()
+	for i := 0; i < 10; i++ { // Check up to 10 levels up
+		if parent.Length() == 0 {
+			break
+		}
+
+		// Check if parent has the specific style attribute
+		style := parent.AttrOr("style", "")
+		if strings.Contains(style, "--full-bleed-section-wrapper_background-color: #F7F6F2;") {
+			return true
 		}
 
 		parent = parent.Parent()
@@ -429,7 +457,3 @@ func (p *Parser) extractReviewCount(text string) string {
 	}
 	return ""
 }
-
-
-
-

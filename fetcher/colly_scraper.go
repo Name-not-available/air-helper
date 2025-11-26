@@ -44,7 +44,7 @@ func (cf *CollyFetcher) Fetch(url string, maxPages int) ([]string, error) {
 	visited := make(map[string]bool)
 
 	// Set up callback to collect HTML from response
-		cf.collector.OnResponse(func(r *colly.Response) {
+	cf.collector.OnResponse(func(r *colly.Response) {
 		htmlPages = append(htmlPages, string(r.Body))
 		pageCount++
 		visited[r.Request.URL.String()] = true
@@ -55,8 +55,8 @@ func (cf *CollyFetcher) Fetch(url string, maxPages int) ([]string, error) {
 		return nil, fmt.Errorf("failed to visit URL: %w", err)
 	}
 
-	// Handle pagination - look for next page links
-	cf.collector.OnHTML("a[aria-label='Next'], a[href*='items_offset']", func(e *colly.HTMLElement) {
+	// Handle pagination - look for page links inside the pagination nav
+	cf.collector.OnHTML("nav[aria-label='Search results pagination'] a", func(e *colly.HTMLElement) {
 		if pageCount >= maxPages {
 			return
 		}
@@ -83,7 +83,3 @@ func (cf *CollyFetcher) Fetch(url string, maxPages int) ([]string, error) {
 
 	return htmlPages, nil
 }
-
-
-
-
