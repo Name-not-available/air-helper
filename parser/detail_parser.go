@@ -156,15 +156,32 @@ func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bath
 		// Bathrooms patterns
 		{regexp.MustCompile(`(?i)(\d+)\s*(?:bathroom|ba|bathrooms|bath)`), &bathrooms},
 		{regexp.MustCompile(`(?i)(\d+)\s*ba\b`), &bathrooms},
-		// Beds patterns (but not bedrooms)
-		{regexp.MustCompile(`(?i)(\d+)\s+bed\b(?!room)`), &beds},
-		{regexp.MustCompile(`(?i)(\d+)\s+beds\b(?!room)`), &beds},
+		// Beds patterns - match "bed" or "beds" but not "bedroom" or "bedrooms"
+		// We'll handle this by checking the match doesn't contain "room" after "bed"
+		{regexp.MustCompile(`(?i)(\d+)\s+bed(?:s)?\b`), &beds},
 	}
 
 	for _, p := range patterns {
 		if *p.field == 0 { // Only set if not already found
 			matches := p.re.FindStringSubmatch(fullText)
 			if len(matches) > 1 {
+				// For beds pattern, check that it's not part of "bedroom"
+				if p.field == &beds {
+					// Get the full match to check context
+					fullMatch := matches[0]
+					matchIndex := strings.Index(strings.ToLower(fullText), strings.ToLower(fullMatch))
+					if matchIndex >= 0 {
+						// Check the next few characters after the match
+						afterMatch := ""
+						if matchIndex+len(fullMatch) < len(fullText) {
+							afterMatch = strings.ToLower(fullText[matchIndex+len(fullMatch):])
+							// If "room" follows immediately, skip this match (it's "bedroom")
+							if strings.HasPrefix(afterMatch, "room") {
+								continue
+							}
+						}
+					}
+				}
 				if val, err := strconv.Atoi(matches[1]); err == nil {
 					*p.field = val
 				}
