@@ -83,11 +83,17 @@ func (w *Writer) WriteListings(listings []models.Listing, clearFirst bool) error
 	var values [][]interface{}
 
 	// Add header row
-	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number"}
+	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number",
+		"Superhost", "Guest Favorite", "Bedrooms", "Bathrooms", "Beds", "Description", "House Rules", "Newest Review Date"}
 	values = append(values, header)
 
 	// Add listing rows
 	for _, listing := range listings {
+		var newestReviewDate interface{}
+		if listing.NewestReviewDate != nil {
+			newestReviewDate = listing.NewestReviewDate.Format("2006-01-02")
+		}
+
 		row := []interface{}{
 			listing.Title,
 			listing.URL,
@@ -96,6 +102,14 @@ func (w *Writer) WriteListings(listings []models.Listing, clearFirst bool) error
 			listing.Stars,
 			listing.ReviewCount,
 			listing.PageNumber,
+			listing.IsSuperhost,
+			listing.IsGuestFavorite,
+			listing.Bedrooms,
+			listing.Bathrooms,
+			listing.Beds,
+			listing.Description,
+			listing.HouseRules,
+			newestReviewDate,
 		}
 		values = append(values, row)
 	}
@@ -153,6 +167,11 @@ func (w *Writer) AppendListings(listings []models.Listing) error {
 	// Prepare data (no header when appending)
 	var values [][]interface{}
 	for _, listing := range listings {
+		var newestReviewDate interface{}
+		if listing.NewestReviewDate != nil {
+			newestReviewDate = listing.NewestReviewDate.Format("2006-01-02")
+		}
+
 		row := []interface{}{
 			listing.Title,
 			listing.URL,
@@ -161,6 +180,14 @@ func (w *Writer) AppendListings(listings []models.Listing) error {
 			listing.Stars,
 			listing.ReviewCount,
 			listing.PageNumber,
+			listing.IsSuperhost,
+			listing.IsGuestFavorite,
+			listing.Bedrooms,
+			listing.Bathrooms,
+			listing.Beds,
+			listing.Description,
+			listing.HouseRules,
+			newestReviewDate,
 		}
 		values = append(values, row)
 	}
@@ -239,11 +266,17 @@ func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models
 	}
 
 	// Add header row
-	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number"}
+	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number",
+		"Superhost", "Guest Favorite", "Bedrooms", "Bathrooms", "Beds", "Description", "House Rules", "Newest Review Date"}
 	values = append(values, header)
 
 	// Add listing rows
 	for _, listing := range listings {
+		var newestReviewDate interface{}
+		if listing.NewestReviewDate != nil {
+			newestReviewDate = listing.NewestReviewDate.Format("2006-01-02")
+		}
+
 		row := []interface{}{
 			listing.Title,
 			listing.URL,
@@ -252,6 +285,14 @@ func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models
 			listing.Stars,
 			listing.ReviewCount,
 			listing.PageNumber,
+			listing.IsSuperhost,
+			listing.IsGuestFavorite,
+			listing.Bedrooms,
+			listing.Bathrooms,
+			listing.Beds,
+			listing.Description,
+			listing.HouseRules,
+			newestReviewDate,
 		}
 		values = append(values, row)
 	}

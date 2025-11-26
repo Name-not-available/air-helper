@@ -175,12 +175,66 @@ func (s *Scheduler) processNextRequest() {
 	filterInstance := filter.NewFilter(cfg)
 	filteredListings := filterInstance.ApplyFilters(allListings)
 
-	// Save listings to database
-	for _, listing := range filteredListings {
+	// Fetch detail pages and enrich listings
+	detailFetcher := fetcher.NewDetailFetcher(rodFetcher.GetBrowser())
+	detailParser := parser.NewDetailParser()
+
+	enrichedListings := make([]models.Listing, 0, len(filteredListings))
+
+	for i, listing := range filteredListings {
+		log.Printf("Fetching detail page for listing %d/%d: %s\n", i+1, len(filteredListings), listing.URL)
+
+		// Fetch detail page
+		detailHTML, err := detailFetcher.FetchDetailPage(listing.URL)
+		if err != nil {
+			log.Printf("Warning: Failed to fetch detail page for %s: %v\n", listing.URL, err)
+			// Continue with basic listing data
+			enrichedListings = append(enrichedListings, listing)
+			continue
+		}
+
+		// Parse detail page
+		detailData, err := detailParser.ParseDetailPage(detailHTML)
+		if err != nil {
+			log.Printf("Warning: Failed to parse detail page for %s: %v\n", listing.URL, err)
+			// Continue with basic listing data
+			enrichedListings = append(enrichedListings, listing)
+			continue
+		}
+
+		// Merge detail data with listing data
+		listing.IsSuperhost = detailData.IsSuperhost
+		listing.IsGuestFavorite = detailData.IsGuestFavorite
+		listing.Bedrooms = detailData.Bedrooms
+		listing.Bathrooms = detailData.Bathrooms
+		listing.Beds = detailData.Beds
+		listing.Description = detailData.Description
+		listing.HouseRules = detailData.HouseRules
+		listing.NewestReviewDate = detailData.NewestReviewDate
+		listing.Reviews = detailData.Reviews
+
+		enrichedListings = append(enrichedListings, listing)
+
+		// Add delay between detail page fetches
+		if i < len(filteredListings)-1 {
+			time.Sleep(3 * time.Second)
+		}
+	}
+
+	// Save enriched listings to database
+	for _, listing := range enrichedListings {
 		var price *float64
 		var currency *string
 		var stars *float64
 		var reviewCount *int
+		var isSuperhost *bool
+		var isGuestFavorite *bool
+		var bedrooms *int
+		var bathrooms *int
+		var beds *int
+		var description *string
+		var houseRules *string
+		var newestReviewDate *time.Time
 
 		if listing.Price > 0 {
 			price = &listing.Price
@@ -194,9 +248,37 @@ func (s *Scheduler) processNextRequest() {
 		if listing.ReviewCount > 0 {
 			reviewCount = &listing.ReviewCount
 		}
+		if listing.Bedrooms > 0 {
+			bedrooms = &listing.Bedrooms
+		}
+		if listing.Bathrooms > 0 {
+			bathrooms = &listing.Bathrooms
+		}
+		if listing.Beds > 0 {
+			beds = &listing.Beds
+		}
+		isSuperhost = &listing.IsSuperhost
+		isGuestFavorite = &listing.IsGuestFavorite
+		if listing.Description != "" {
+			description = &listing.Description
+		}
+		if listing.HouseRules != "" {
+			houseRules = &listing.HouseRules
+		}
+		newestReviewDate = listing.NewestReviewDate
 
-		if err := s.db.SaveListing(req.ID, listing.Title, listing.URL, price, currency, stars, reviewCount); err != nil {
-			log.Printf("Warning: Failed to save listing to database: %v\n", err)
+		listingID, err := s.db.SaveEnrichedListing(req.ID, listing.Title, listing.URL, price, currency, stars, reviewCount,
+			isSuperhost, isGuestFavorite, bedrooms, bathrooms, beds, description, houseRules, newestReviewDate)
+		if err != nil {
+			log.Printf("Warning: Failed to save enriched listing to database: %v\n", err)
+			continue
+		}
+
+		// Save reviews separately
+		if len(listing.Reviews) > 0 {
+			if err := s.db.SaveReviews(listingID, listing.Reviews); err != nil {
+				log.Printf("Warning: Failed to save reviews for listing %d: %v\n", listingID, err)
+			}
 		}
 	}
 
@@ -213,7 +295,7 @@ func (s *Scheduler) processNextRequest() {
 		cfg.Filters.MinReviews, cfg.Filters.MinPrice, cfg.Filters.MaxPrice, cfg.Filters.MinStars)
 
 	// Write to Google Sheets (sheet will be inserted at the beginning)
-	createdSheetName, sheetID, err := s.writer.CreateSheetAndWriteListings(sheetName, filteredListings, req.URL, filterInfo)
+	createdSheetName, sheetID, err := s.writer.CreateSheetAndWriteListings(sheetName, enrichedListings, req.URL, filterInfo)
 	if err != nil {
 		log.Printf("Error writing to Google Sheets: %v\n", err)
 		s.handleRequestError(req, err)

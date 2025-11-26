@@ -133,6 +133,11 @@ func (rf *RodFetcher) Close() error {
 	return nil
 }
 
+// GetBrowser returns the underlying browser instance
+func (rf *RodFetcher) GetBrowser() *rod.Browser {
+	return rf.browser
+}
+
 // findNextPageLink finds the next page link within the pagination navigation.
 // It scopes the search to nav[aria-label='Search results pagination'] to avoid
 // clicking on carousel/calendar controls. Returns the href URL, the element, and any error.

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"bnb-fetcher/models"
 )
 
 // UserConfig represents user-specific configuration
@@ -35,16 +37,35 @@ type Request struct {
 
 // Listing represents a fetched listing stored in database
 type Listing struct {
-	ID          int
-	RequestID   int
-	Title       string
-	URL         string
-	Price       sql.NullFloat64
-	Currency    sql.NullString
-	Stars       sql.NullFloat64
-	ReviewCount sql.NullInt64
-	Status      string // "pending", "saved", "failed"
-	CreatedAt   time.Time
+	ID               int
+	RequestID        int
+	Title            string
+	URL              string
+	Price            sql.NullFloat64
+	Currency         sql.NullString
+	Stars            sql.NullFloat64
+	ReviewCount      sql.NullInt64
+	Status           string // "pending", "saved", "failed"
+	IsSuperhost      sql.NullBool
+	IsGuestFavorite  sql.NullBool
+	Bedrooms         sql.NullInt64
+	Bathrooms        sql.NullInt64
+	Beds             sql.NullInt64
+	Description      sql.NullString
+	HouseRules       sql.NullString
+	NewestReviewDate sql.NullTime
+	CreatedAt        time.Time
+}
+
+// Review represents a review stored in database
+type Review struct {
+	ID           int
+	ListingID    int
+	Date         time.Time
+	Score        sql.NullFloat64
+	FullText     string
+	TimeOnAirbnb sql.NullString
+	CreatedAt    time.Time
 }
 
 // GetUserConfig retrieves user configuration, creating default if not exists
@@ -188,6 +209,116 @@ func (db *DB) SaveListing(requestID int, title, url string, price *float64, curr
 		VALUES ($1, $2, $3, $4, $5, $6, $7, 'saved')
 	`, requestID, title, url, priceVal, currencyVal, starsVal, reviewCountVal)
 	return err
+}
+
+// SaveEnrichedListing saves a listing with all detail page fields to the database
+// Returns the listing ID
+func (db *DB) SaveEnrichedListing(requestID int, title, url string, price *float64, currency *string, stars *float64, reviewCount *int,
+	isSuperhost *bool, isGuestFavorite *bool, bedrooms *int, bathrooms *int, beds *int,
+	description *string, houseRules *string, newestReviewDate *time.Time) (int, error) {
+	var priceVal sql.NullFloat64
+	var currencyVal sql.NullString
+	var starsVal sql.NullFloat64
+	var reviewCountVal sql.NullInt64
+	var isSuperhostVal sql.NullBool
+	var isGuestFavoriteVal sql.NullBool
+	var bedroomsVal sql.NullInt64
+	var bathroomsVal sql.NullInt64
+	var bedsVal sql.NullInt64
+	var descriptionVal sql.NullString
+	var houseRulesVal sql.NullString
+	var newestReviewDateVal sql.NullTime
+
+	if price != nil {
+		priceVal = sql.NullFloat64{Float64: *price, Valid: true}
+	}
+	if currency != nil {
+		currencyVal = sql.NullString{String: *currency, Valid: true}
+	}
+	if stars != nil {
+		starsVal = sql.NullFloat64{Float64: *stars, Valid: true}
+	}
+	if reviewCount != nil {
+		reviewCountVal = sql.NullInt64{Int64: int64(*reviewCount), Valid: true}
+	}
+	if isSuperhost != nil {
+		isSuperhostVal = sql.NullBool{Bool: *isSuperhost, Valid: true}
+	}
+	if isGuestFavorite != nil {
+		isGuestFavoriteVal = sql.NullBool{Bool: *isGuestFavorite, Valid: true}
+	}
+	if bedrooms != nil {
+		bedroomsVal = sql.NullInt64{Int64: int64(*bedrooms), Valid: true}
+	}
+	if bathrooms != nil {
+		bathroomsVal = sql.NullInt64{Int64: int64(*bathrooms), Valid: true}
+	}
+	if beds != nil {
+		bedsVal = sql.NullInt64{Int64: int64(*beds), Valid: true}
+	}
+	if description != nil {
+		descriptionVal = sql.NullString{String: *description, Valid: true}
+	}
+	if houseRules != nil {
+		houseRulesVal = sql.NullString{String: *houseRules, Valid: true}
+	}
+	if newestReviewDate != nil {
+		newestReviewDateVal = sql.NullTime{Time: *newestReviewDate, Valid: true}
+	}
+
+	var listingID int
+	err := db.conn.QueryRow(`
+		INSERT INTO listings (request_id, title, url, price, currency, stars, review_count, 
+			is_superhost, is_guest_favorite, bedrooms, bathrooms, beds, description, house_rules, newest_review_date, status)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 'saved')
+		RETURNING id
+	`, requestID, title, url, priceVal, currencyVal, starsVal, reviewCountVal,
+		isSuperhostVal, isGuestFavoriteVal, bedroomsVal, bathroomsVal, bedsVal,
+		descriptionVal, houseRulesVal, newestReviewDateVal).Scan(&listingID)
+	return listingID, err
+}
+
+// SaveReviews saves multiple reviews for a listing
+// Accepts models.Review slice and converts to database format
+func (db *DB) SaveReviews(listingID int, reviews []models.Review) error {
+	if len(reviews) == 0 {
+		return nil
+	}
+
+	// Use a transaction for bulk insert
+	tx, err := db.conn.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+		INSERT INTO listing_reviews (listing_id, date, score, full_text, time_on_airbnb)
+		VALUES ($1, $2, $3, $4, $5)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	for _, review := range reviews {
+		var scoreVal sql.NullFloat64
+		var timeOnAirbnbVal sql.NullString
+
+		if review.Score > 0 {
+			scoreVal = sql.NullFloat64{Float64: review.Score, Valid: true}
+		}
+		if review.TimeOnAirbnb != "" {
+			timeOnAirbnbVal = sql.NullString{String: review.TimeOnAirbnb, Valid: true}
+		}
+
+		_, err := stmt.Exec(listingID, review.Date, scoreVal, review.FullText, timeOnAirbnbVal)
+		if err != nil {
+			return err
+		}
+	}
+
+	return tx.Commit()
 }
 
 // GetRequestByID retrieves a request by ID

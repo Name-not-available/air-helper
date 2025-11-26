@@ -128,12 +128,36 @@ func (db *DB) initSchema() error {
 			stars DOUBLE PRECISION,
 			review_count INTEGER,
 			status VARCHAR(20) NOT NULL DEFAULT 'pending',
+			is_superhost BOOLEAN,
+			is_guest_favorite BOOLEAN,
+			bedrooms INTEGER,
+			bathrooms INTEGER,
+			beds INTEGER,
+			description TEXT,
+			house_rules TEXT,
+			newest_review_date TIMESTAMP,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			CONSTRAINT valid_status CHECK (status IN ('pending', 'saved', 'failed'))
 		)
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to create listings table: %w", err)
+	}
+
+	// Create listing_reviews table
+	_, err = db.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS listing_reviews (
+			id SERIAL PRIMARY KEY,
+			listing_id INTEGER NOT NULL REFERENCES listings(id) ON DELETE CASCADE,
+			date TIMESTAMP NOT NULL,
+			score DOUBLE PRECISION,
+			full_text TEXT NOT NULL,
+			time_on_airbnb VARCHAR(255),
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create listing_reviews table: %w", err)
 	}
 
 	// Create indexes
@@ -150,6 +174,16 @@ func (db *DB) initSchema() error {
 	_, err = db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_listings_request_id ON listings(request_id)`)
 	if err != nil {
 		log.Printf("Warning: Failed to create index on listings.request_id: %v\n", err)
+	}
+
+	_, err = db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_listing_reviews_listing_id ON listing_reviews(listing_id)`)
+	if err != nil {
+		log.Printf("Warning: Failed to create index on listing_reviews.listing_id: %v\n", err)
+	}
+
+	_, err = db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_listing_reviews_date ON listing_reviews(date)`)
+	if err != nil {
+		log.Printf("Warning: Failed to create index on listing_reviews.date: %v\n", err)
 	}
 
 	log.Println("Database schema initialized successfully")
