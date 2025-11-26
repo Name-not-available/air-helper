@@ -154,6 +154,11 @@ func (s *Scheduler) processNextRequest() {
 			continue
 		}
 		log.Printf("Parsed page %d: found %d listings\n", i+1, len(listings))
+		// Set page number for each listing
+		pageNumber := i + 1
+		for j := range listings {
+			listings[j].PageNumber = pageNumber
+		}
 		allListings = append(allListings, listings...)
 	}
 	

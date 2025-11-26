@@ -8,6 +8,7 @@ type Listing struct {
 	Stars       float64
 	ReviewCount int
 	URL         string
+	PageNumber  int    // Page number where this listing was found
 	AllPrices   []PriceInfo // For debugging: all prices found
 }
 

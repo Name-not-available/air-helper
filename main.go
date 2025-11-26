@@ -769,6 +769,11 @@ func fetchListings(url string, maxPages int, cfg *config.FilterConfig) ([]models
 			log.Printf("Warning: Failed to parse page %d: %v\n", i+1, err)
 			continue
 		}
+		// Set page number for each listing
+		pageNumber := i + 1
+		for j := range listings {
+			listings[j].PageNumber = pageNumber
+		}
 		allListings = append(allListings, listings...)
 	}
 

@@ -20,11 +20,11 @@ func NewCollyFetcher() *CollyFetcher {
 		colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"),
 	)
 
-	// Set rate limiting
+	// Set rate limiting - 3-5 seconds between requests
 	c.Limit(&colly.LimitRule{
 		DomainGlob:  "*bnb.*",
 		Parallelism: 1,
-		Delay:       2 * time.Second,
+		Delay:       4 * time.Second, // 4 seconds average (between 3-5)
 	})
 
 	// Set error handler

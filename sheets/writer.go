@@ -83,7 +83,7 @@ func (w *Writer) WriteListings(listings []models.Listing, clearFirst bool) error
 	var values [][]interface{}
 
 	// Add header row
-	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count"}
+	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number"}
 	values = append(values, header)
 
 	// Add listing rows
@@ -95,6 +95,7 @@ func (w *Writer) WriteListings(listings []models.Listing, clearFirst bool) error
 			listing.Currency,
 			listing.Stars,
 			listing.ReviewCount,
+			listing.PageNumber,
 		}
 		values = append(values, row)
 	}
@@ -159,6 +160,7 @@ func (w *Writer) AppendListings(listings []models.Listing) error {
 			listing.Currency,
 			listing.Stars,
 			listing.ReviewCount,
+			listing.PageNumber,
 		}
 		values = append(values, row)
 	}
@@ -237,7 +239,7 @@ func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models
 	}
 
 	// Add header row
-	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count"}
+	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number"}
 	values = append(values, header)
 
 	// Add listing rows
@@ -249,6 +251,7 @@ func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models
 			listing.Currency,
 			listing.Stars,
 			listing.ReviewCount,
+			listing.PageNumber,
 		}
 		values = append(values, row)
 	}

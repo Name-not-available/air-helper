@@ -287,6 +287,10 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 
 	// Handle pagination
 	for pageCount < maxPages {
+		// Add delay between page requests (3-5 seconds)
+		// Use 4 seconds as average between 3-5
+		time.Sleep(4 * time.Second)
+		
 		// Get current URL before navigation attempt
 		beforeURLResult, err := page.Eval(`() => window.location.href`)
 		beforeURLStr := ""
