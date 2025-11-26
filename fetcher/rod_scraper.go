@@ -138,8 +138,24 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 
 	log.Printf("Starting fetch with maxPages: %d\n", maxPages)
 
-	// Create a new page
-	page := rf.browser.MustPage()
+	// Create a new page (use MustPage with panic recovery)
+	var page *rod.Page
+	var pageErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				pageErr = fmt.Errorf("panic while creating page: %v", r)
+				log.Printf("Panic while creating page: %v\n", r)
+			}
+		}()
+		page = rf.browser.MustPage()
+	}()
+	if pageErr != nil {
+		return nil, pageErr
+	}
+	if page == nil {
+		return nil, fmt.Errorf("failed to create page")
+	}
 	defer page.Close()
 
 	// Navigate to the URL
@@ -151,8 +167,10 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 	page.WaitLoad()
 	time.Sleep(3 * time.Second) // Give JavaScript time to render
 
-	// Try to wait for listing elements to appear
-	page.Timeout(10 * time.Second).MustWaitStable()
+	// Try to wait for listing elements to appear (with timeout and error handling)
+	if err := page.Timeout(10 * time.Second).WaitStable(500 * time.Millisecond); err != nil {
+		log.Printf("Warning: Page did not stabilize within timeout, continuing anyway: %v\n", err)
+	}
 
 	// Get HTML content
 	html, err := page.HTML()
@@ -228,15 +246,25 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 		time.Sleep(1 * time.Second) // Wait after scrolling
 
 		// Use JavaScript click which is more reliable and doesn't timeout
-		// Get the element's selector or use a more reliable click method
-		nextButton.MustClick()
+		// Try JavaScript click first (more reliable), fallback to regular click with timeout
+		_, err = nextButton.Eval(`() => this.click()`)
+		if err != nil {
+			// Fallback to regular click with timeout
+			err = nextButton.Timeout(10 * time.Second).Click("left", 1)
+			if err != nil {
+				log.Printf("Failed to click next button: %v\n", err)
+				break
+			}
+		}
 
 		// Wait for new content to load - wait longer for dynamic content
 		page.WaitLoad()
 		time.Sleep(4 * time.Second) // Increased wait time for content to load
 
-		// Wait for the page to stabilize (content has changed)
-		page.Timeout(15 * time.Second).MustWaitStable()
+		// Wait for the page to stabilize (content has changed) - with error handling
+		if err := page.Timeout(15 * time.Second).WaitStable(500 * time.Millisecond); err != nil {
+			log.Printf("Warning: Page did not stabilize after click, continuing anyway: %v\n", err)
+		}
 
 		// Additional wait to ensure listings are rendered
 		time.Sleep(2 * time.Second)
