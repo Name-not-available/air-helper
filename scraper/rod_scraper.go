@@ -135,6 +135,8 @@ func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
 	var htmlPages []string
 	pageCount := 0
 
+	log.Printf("Starting scrape with maxPages: %d\n", maxPages)
+
 	// Create a new page
 	page := rs.browser.MustPage()
 	defer page.Close()
@@ -158,6 +160,7 @@ func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
 	}
 	htmlPages = append(htmlPages, html)
 	pageCount++
+	log.Printf("Scraped page %d/%d\n", pageCount, maxPages)
 
 	// Handle pagination
 	for pageCount < maxPages {
@@ -195,7 +198,10 @@ func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
 		}
 		htmlPages = append(htmlPages, html)
 		pageCount++
+		log.Printf("Scraped page %d/%d\n", pageCount, maxPages)
 	}
+
+	log.Printf("Scraping completed. Total pages scraped: %d (requested: %d)\n", len(htmlPages), maxPages)
 
 	if len(htmlPages) == 0 {
 		log.Println("Warning: No HTML pages collected.")

@@ -128,6 +128,7 @@ func (s *Scheduler) processNextRequest() {
 
 	// Scrape pages with status updates
 	// We'll scrape page by page and send updates
+	log.Printf("Using maxPages from user config: %d\n", userConfig.MaxPages)
 	htmlPages, err := s.scrapeWithUpdates(scraperInstance, req.URL, userConfig.MaxPages, req.TelegramMessageID, req.UserID)
 	if err != nil {
 		log.Printf("Error scraping: %v\n", err)
