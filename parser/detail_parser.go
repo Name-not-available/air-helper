@@ -114,52 +114,100 @@ func (dp *DetailParser) extractGuestFavorite(doc *goquery.Document) bool {
 
 // extractRoomCounts extracts bedrooms, bathrooms, and beds count
 func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bathrooms, beds int) {
-	// Get all text content that might contain room info
-	fullText := doc.Text()
-
-	// Pattern for bedrooms: "X bedroom" or "X bedrooms"
-	bedroomRe := regexp.MustCompile(`(\d+)\s+bedroom`)
-	matches := bedroomRe.FindStringSubmatch(fullText)
-	if len(matches) > 1 {
-		if val, err := strconv.Atoi(matches[1]); err == nil {
-			bedrooms = val
-		}
-	}
-
-	// Pattern for bathrooms: "X bathroom" or "X bathrooms"
-	bathroomRe := regexp.MustCompile(`(\d+)\s+bathroom`)
-	matches = bathroomRe.FindStringSubmatch(fullText)
-	if len(matches) > 1 {
-		if val, err := strconv.Atoi(matches[1]); err == nil {
-			bathrooms = val
-		}
-	}
-
-	// Pattern for beds: "X bed" or "X beds"
-	bedRe := regexp.MustCompile(`(\d+)\s+bed\b`)
-	matches = bedRe.FindStringSubmatch(fullText)
-	if len(matches) > 1 {
-		if val, err := strconv.Atoi(matches[1]); err == nil {
-			beds = val
-		}
-	}
-
-	// Also try to find in specific elements
-	doc.Find("[data-testid='bedroom-count'], [data-testid='bathroom-count'], [data-testid='bed-count']").Each(func(i int, s *goquery.Selection) {
-		text := strings.ToLower(s.Text())
+	// First, try to find in specific data-testid elements (most reliable)
+	doc.Find("[data-testid*='bedroom'], [data-testid*='bathroom'], [data-testid*='bed'], [data-testid*='room']").Each(func(i int, s *goquery.Selection) {
+		text := strings.TrimSpace(s.Text())
 		testid, _ := s.Attr("data-testid")
+		testid = strings.ToLower(testid)
 
-		if strings.Contains(testid, "bedroom") {
-			if val, err := strconv.Atoi(strings.TrimSpace(text)); err == nil {
-				bedrooms = val
+		// Extract number from text
+		re := regexp.MustCompile(`(\d+)`)
+		matches := re.FindStringSubmatch(text)
+		if len(matches) > 1 {
+			if val, err := strconv.Atoi(matches[1]); err == nil {
+				if strings.Contains(testid, "bedroom") || strings.Contains(testid, "br") {
+					if bedrooms == 0 {
+						bedrooms = val
+					}
+				} else if strings.Contains(testid, "bathroom") || strings.Contains(testid, "ba") {
+					if bathrooms == 0 {
+						bathrooms = val
+					}
+				} else if strings.Contains(testid, "bed") && !strings.Contains(testid, "bedroom") {
+					if beds == 0 {
+						beds = val
+					}
+				}
 			}
-		} else if strings.Contains(testid, "bathroom") {
-			if val, err := strconv.Atoi(strings.TrimSpace(text)); err == nil {
+		}
+	})
+
+	// Get all text content that might contain room info
+	fullText := strings.ToLower(doc.Text())
+
+	// More comprehensive patterns (case-insensitive)
+	patterns := []struct {
+		re    *regexp.Regexp
+		field *int
+	}{
+		// Bedrooms patterns
+		{regexp.MustCompile(`(?i)(\d+)\s*(?:bedroom|br|bedrooms)`), &bedrooms},
+		{regexp.MustCompile(`(?i)(\d+)\s*br\b`), &bedrooms},
+		// Bathrooms patterns
+		{regexp.MustCompile(`(?i)(\d+)\s*(?:bathroom|ba|bathrooms|bath)`), &bathrooms},
+		{regexp.MustCompile(`(?i)(\d+)\s*ba\b`), &bathrooms},
+		// Beds patterns (but not bedrooms)
+		{regexp.MustCompile(`(?i)(\d+)\s+bed\b(?!room)`), &beds},
+		{regexp.MustCompile(`(?i)(\d+)\s+beds\b(?!room)`), &beds},
+	}
+
+	for _, p := range patterns {
+		if *p.field == 0 { // Only set if not already found
+			matches := p.re.FindStringSubmatch(fullText)
+			if len(matches) > 1 {
+				if val, err := strconv.Atoi(matches[1]); err == nil {
+					*p.field = val
+				}
+			}
+		}
+	}
+
+	// Try to find in summary sections (common Airbnb pattern: "1 bed, 1 bath")
+	summaryPattern := regexp.MustCompile(`(?i)(\d+)\s*(?:bed|br)\s*[,\s]+\s*(\d+)\s*(?:bath|ba)`)
+	matches := summaryPattern.FindStringSubmatch(fullText)
+	if len(matches) >= 3 {
+		if beds == 0 {
+			if val, err := strconv.Atoi(matches[1]); err == nil {
+				beds = val
+			}
+		}
+		if bathrooms == 0 {
+			if val, err := strconv.Atoi(matches[2]); err == nil {
 				bathrooms = val
 			}
-		} else if strings.Contains(testid, "bed") && !strings.Contains(testid, "bedroom") {
-			if val, err := strconv.Atoi(strings.TrimSpace(text)); err == nil {
-				beds = val
+		}
+	}
+
+	// Look for structured data in meta tags or JSON-LD
+	doc.Find("script[type='application/ld+json']").Each(func(i int, s *goquery.Selection) {
+		jsonText := s.Text()
+		// Try to extract from JSON-LD (basic pattern matching)
+		if strings.Contains(jsonText, "numberOfBedrooms") {
+			re := regexp.MustCompile(`"numberOfBedrooms"\s*:\s*(\d+)`)
+			matches := re.FindStringSubmatch(jsonText)
+			if len(matches) > 1 && bedrooms == 0 {
+				if val, err := strconv.Atoi(matches[1]); err == nil {
+					bedrooms = val
+				}
+			}
+		}
+		if strings.Contains(jsonText, "numberOfBathroomsTotal") {
+			re := regexp.MustCompile(`"numberOfBathroomsTotal"\s*:\s*(\d+)`)
+			matches := re.FindStringSubmatch(jsonText)
+			if len(matches) > 1 && bathrooms == 0 {
+				if val, err := strconv.Atoi(matches[1]); err == nil {
+					bathrooms = val
+				}
 			}
 		}
 	})
@@ -198,33 +246,72 @@ func (dp *DetailParser) extractDescription(doc *goquery.Document) string {
 
 // extractHouseRules extracts house rules
 func (dp *DetailParser) extractHouseRules(doc *goquery.Document) string {
+	var foundRules string
+
 	// Common selectors for house rules
 	houseRulesSelectors := []string{
 		"[data-testid='house-rules']",
+		"[data-testid*='house-rules']",
 		"[data-section-id='HOUSE_RULES_DEFAULT']",
+		"[data-section-id*='HOUSE_RULES']",
 		"#house-rules",
-		"._1y6fhhr:contains('House rules')",
+		"[id*='house-rules']",
+		"[class*='house-rules']",
+		"[class*='HouseRules']",
 	}
 
 	for _, selector := range houseRulesSelectors {
 		rules := doc.Find(selector).First().Text()
-		if rules != "" {
-			return strings.TrimSpace(rules)
+		if rules != "" && len(rules) > 10 {
+			foundRules = strings.TrimSpace(rules)
+			if len(foundRules) > 20 {
+				return foundRules
+			}
 		}
 	}
 
-	// Look for section containing "House rules"
-	doc.Find("section, div").Each(func(i int, s *goquery.Selection) {
+	// Look for section containing "House rules" text
+	doc.Find("section, div, article").Each(func(i int, s *goquery.Selection) {
+		if foundRules != "" && len(foundRules) > 20 {
+			return // Already found good rules
+		}
 		text := strings.ToLower(s.Text())
-		if strings.Contains(text, "house rules") {
+		if strings.Contains(text, "house rules") || strings.Contains(text, "house rule") {
 			rules := s.Text()
-			if len(rules) > 20 {
-				return
+			// Extract just the rules part (after "House rules" heading)
+			if idx := strings.Index(strings.ToLower(rules), "house rules"); idx >= 0 {
+				rules = rules[idx:]
+				// Try to find the end (next heading or section)
+				if len(rules) > 20 {
+					foundRules = strings.TrimSpace(rules)
+					// Limit length to avoid getting too much
+					if len(foundRules) > 500 {
+						foundRules = foundRules[:500] + "..."
+					}
+				}
 			}
 		}
 	})
 
-	return ""
+	// Look for expandable sections that might contain house rules
+	doc.Find("[aria-expanded], button, [role='button']").Each(func(i int, s *goquery.Selection) {
+		if foundRules != "" && len(foundRules) > 20 {
+			return
+		}
+		text := strings.ToLower(s.Text())
+		if strings.Contains(text, "house rules") || strings.Contains(text, "show house rules") {
+			// Try to find the content that would be revealed
+			parent := s.Parent()
+			if parent != nil {
+				rules := parent.Find("div, ul, ol").Text()
+				if len(rules) > 20 {
+					foundRules = strings.TrimSpace(rules)
+				}
+			}
+		}
+	})
+
+	return foundRules
 }
 
 // extractReviews extracts all reviews from the page
@@ -232,26 +319,42 @@ func (dp *DetailParser) extractReviews(doc *goquery.Document) ([]models.Review, 
 	var reviews []models.Review
 	var newestDate *time.Time
 
-	// Find all review containers
-	doc.Find("[data-testid='review'], [data-testid='review-item'], section[aria-label*='review']").Each(func(i int, s *goquery.Selection) {
-		review := dp.extractSingleReview(s)
-		if review != nil {
-			reviews = append(reviews, *review)
-			// Track newest date
-			if newestDate == nil || review.Date.After(*newestDate) {
-				newestDate = &review.Date
-			}
-		}
-	})
+	// Find all review containers with more comprehensive selectors
+	reviewSelectors := []string{
+		"[data-testid='review']",
+		"[data-testid='review-item']",
+		"[data-testid*='review']",
+		"section[aria-label*='review']",
+		"[class*='Review']",
+		"[class*='review']",
+		"article[data-review-id]",
+	}
 
-	// If no reviews found with specific selectors, try to find review sections
+	for _, selector := range reviewSelectors {
+		doc.Find(selector).Each(func(i int, s *goquery.Selection) {
+			review := dp.extractSingleReview(s)
+			if review != nil && !review.Date.IsZero() {
+				reviews = append(reviews, *review)
+				// Track newest date
+				if newestDate == nil || review.Date.After(*newestDate) {
+					newestDate = &review.Date
+				}
+			}
+		})
+	}
+
+	// If no reviews found with specific selectors, try to find review sections by content
 	if len(reviews) == 0 {
-		doc.Find("div, section").Each(func(i int, s *goquery.Selection) {
+		doc.Find("div, section, article").Each(func(i int, s *goquery.Selection) {
 			// Check if this looks like a review container
 			text := strings.ToLower(s.Text())
-			if strings.Contains(text, "review") && (strings.Contains(text, "star") || strings.Contains(text, "rating")) {
+			hasReviewKeyword := strings.Contains(text, "review") || strings.Contains(text, "rating")
+			hasStarOrScore := strings.Contains(text, "star") || strings.Contains(text, "rating") || regexp.MustCompile(`\d+\.?\d*\s*(?:out of|/)\s*5`).MatchString(text)
+			hasDate := regexp.MustCompile(`\w+\s+\d{1,2},?\s+\d{4}|\d{1,2}/\d{1,2}/\d{4}|\d+\s+(?:day|week|month|year)s?\s+ago`).MatchString(text)
+			
+			if hasReviewKeyword && (hasStarOrScore || hasDate) {
 				review := dp.extractSingleReview(s)
-				if review != nil {
+				if review != nil && !review.Date.IsZero() {
 					reviews = append(reviews, *review)
 					if newestDate == nil || review.Date.After(*newestDate) {
 						newestDate = &review.Date
@@ -261,6 +364,18 @@ func (dp *DetailParser) extractReviews(doc *goquery.Document) ([]models.Review, 
 		})
 	}
 
+	// Ensure newestDate is set if we have at least one review
+	if len(reviews) > 0 && newestDate == nil {
+		// Find the newest date from reviews
+		for _, review := range reviews {
+			if !review.Date.IsZero() {
+				if newestDate == nil || review.Date.After(*newestDate) {
+					newestDate = &review.Date
+				}
+			}
+		}
+	}
+
 	return reviews, newestDate
 }
 
@@ -268,56 +383,110 @@ func (dp *DetailParser) extractReviews(doc *goquery.Document) ([]models.Review, 
 func (dp *DetailParser) extractSingleReview(s *goquery.Selection) *models.Review {
 	review := &models.Review{}
 
-	// Extract date
+	// Extract date (try multiple times with different scopes)
 	dateStr := dp.extractReviewDate(s)
 	if dateStr == "" {
-		return nil // Need at least a date
+		// Try parent elements
+		parent := s.Parent()
+		if parent != nil {
+			dateStr = dp.extractReviewDate(parent)
+		}
+	}
+	if dateStr == "" {
+		// Try siblings
+		s.PrevAll().Each(func(i int, prev *goquery.Selection) {
+			if dateStr == "" {
+				dateStr = dp.extractReviewDate(prev)
+			}
+		})
 	}
 
-	parsedDate, err := dp.parseDate(dateStr)
-	if err != nil {
-		return nil
+	// Parse date, but don't fail if date parsing fails - use current date as fallback
+	if dateStr != "" {
+		parsedDate, err := dp.parseDate(dateStr)
+		if err == nil {
+			review.Date = parsedDate
+		} else {
+			// Use current date as fallback if parsing fails
+			review.Date = time.Now()
+		}
+	} else {
+		// No date found, use current date as fallback
+		review.Date = time.Now()
 	}
-	review.Date = parsedDate
 
 	// Extract score
 	review.Score = dp.extractReviewScore(s)
 
 	// Extract full text
 	review.FullText = dp.extractReviewText(s)
+	if review.FullText == "" {
+		// Try to get text from the selection itself
+		review.FullText = strings.TrimSpace(s.Text())
+		// Limit length
+		if len(review.FullText) > 5000 {
+			review.FullText = review.FullText[:5000] + "..."
+		}
+	}
 
 	// Extract time on Airbnb
 	review.TimeOnAirbnb = dp.extractTimeOnAirbnb(s)
+
+	// Only return review if it has at least text or score
+	if review.FullText == "" && review.Score == 0 {
+		return nil
+	}
 
 	return review
 }
 
 // extractReviewDate extracts the review date
 func (dp *DetailParser) extractReviewDate(s *goquery.Selection) string {
-	// Look for date elements
+	// Look for date elements with datetime attribute (most reliable)
 	dateSelectors := []string{
 		"[data-testid='review-date']",
+		"[data-testid*='date']",
+		"time[datetime]",
 		"time",
 		"[datetime]",
+		"[data-date]",
 	}
 
 	for _, selector := range dateSelectors {
-		dateStr := s.Find(selector).First().AttrOr("datetime", "")
-		if dateStr != "" {
-			return dateStr
-		}
-		dateStr = s.Find(selector).First().Text()
-		if dateStr != "" {
-			return strings.TrimSpace(dateStr)
+		elem := s.Find(selector).First()
+		if elem.Length() > 0 {
+			// Try datetime attribute first
+			dateStr := elem.AttrOr("datetime", "")
+			if dateStr != "" {
+				return strings.TrimSpace(dateStr)
+			}
+			// Try data-date attribute
+			dateStr = elem.AttrOr("data-date", "")
+			if dateStr != "" {
+				return strings.TrimSpace(dateStr)
+			}
+			// Try text content
+			dateStr = elem.Text()
+			if dateStr != "" {
+				dateStr = strings.TrimSpace(dateStr)
+				// Validate it looks like a date
+				if len(dateStr) > 5 {
+					return dateStr
+				}
+			}
 		}
 	}
 
-	// Try to find date patterns in text
+	// Try to find date patterns in text (more comprehensive patterns)
 	text := s.Text()
 	datePatterns := []*regexp.Regexp{
-		regexp.MustCompile(`(\w+ \d{1,2}, \d{4})`), // "March 15, 2024"
-		regexp.MustCompile(`(\d{1,2}/\d{1,2}/\d{4})`), // "3/15/2024"
-		regexp.MustCompile(`(\d{4}-\d{2}-\d{2})`),    // "2024-03-15"
+		regexp.MustCompile(`(\w+ \d{1,2}, \d{4})`),                    // "March 15, 2024"
+		regexp.MustCompile(`(\w+\.?\s+\d{1,2}, \d{4})`),              // "Mar. 15, 2024" or "Mar 15, 2024"
+		regexp.MustCompile(`(\d{1,2}/\d{1,2}/\d{4})`),                // "3/15/2024"
+		regexp.MustCompile(`(\d{4}-\d{2}-\d{2})`),                    // "2024-03-15"
+		regexp.MustCompile(`(\d{1,2}\.\d{1,2}\.\d{4})`),              // "15.03.2024"
+		regexp.MustCompile(`(\d{1,2}\s+\w+\s+\d{4})`),                // "15 March 2024"
+		regexp.MustCompile(`(\d+\s+(?:day|days|week|weeks|month|months|year|years)\s+ago)`), // Relative dates
 	}
 
 	for _, pattern := range datePatterns {
@@ -397,23 +566,58 @@ func (dp *DetailParser) extractTimeOnAirbnb(s *goquery.Selection) string {
 	return ""
 }
 
-// parseDate parses various date formats
+// parseDate parses various date formats including relative dates
 func (dp *DetailParser) parseDate(dateStr string) (time.Time, error) {
+	// Handle relative dates like "2 months ago", "3 weeks ago"
+	relativeDateRe := regexp.MustCompile(`(\d+)\s+(day|days|week|weeks|month|months|year|years)\s+ago`)
+	matches := relativeDateRe.FindStringSubmatch(strings.ToLower(dateStr))
+	if len(matches) >= 3 {
+		amount, _ := strconv.Atoi(matches[1])
+		unit := matches[2]
+		now := time.Now()
+		switch unit {
+		case "day", "days":
+			return now.AddDate(0, 0, -amount), nil
+		case "week", "weeks":
+			return now.AddDate(0, 0, -amount*7), nil
+		case "month", "months":
+			return now.AddDate(0, -amount, 0), nil
+		case "year", "years":
+			return now.AddDate(-amount, 0, 0), nil
+		}
+	}
+
 	// Try various date formats
 	formats := []string{
 		time.RFC3339,
+		time.RFC3339Nano,
+		"2006-01-02T15:04:05Z",
+		"2006-01-02T15:04:05-07:00",
 		"2006-01-02",
 		"January 2, 2006",
 		"Jan 2, 2006",
+		"Jan. 2, 2006",
 		"1/2/2006",
 		"01/02/2006",
-		"2006-01-02T15:04:05Z07:00",
+		"2006/01/02",
+		"2 January 2006",
+		"2 Jan 2006",
+		"15.03.2006",
+		"2006-01-02 15:04:05",
 	}
 
 	for _, format := range formats {
 		if t, err := time.Parse(format, dateStr); err == nil {
 			return t, nil
 		}
+	}
+
+	// Try parsing with location (common in some formats)
+	if t, err := time.Parse("January 2, 2006", dateStr); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse("Jan 2, 2006", dateStr); err == nil {
+		return t, nil
 	}
 
 	// If all formats fail, return error

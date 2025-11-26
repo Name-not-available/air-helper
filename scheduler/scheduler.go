@@ -175,21 +175,76 @@ func (s *Scheduler) processNextRequest() {
 	filterInstance := filter.NewFilter(cfg)
 	filteredListings := filterInstance.ApplyFilters(allListings)
 
-	// Fetch detail pages and enrich listings
+	// Save basic listings to database first (with status 'pending')
+	// Store URL -> listingID mapping for later updates
+	urlToIDMap := make(map[string]int)
+	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("💾 Saving %d listings to database...", len(filteredListings)))
+
+	for _, listing := range filteredListings {
+		var price *float64
+		var currency *string
+		var stars *float64
+		var reviewCount *int
+
+		if listing.Price > 0 {
+			price = &listing.Price
+		}
+		if listing.Currency != "" {
+			currency = &listing.Currency
+		}
+		if listing.Stars > 0 {
+			stars = &listing.Stars
+		}
+		if listing.ReviewCount > 0 {
+			reviewCount = &listing.ReviewCount
+		}
+
+		// Save basic listing with status 'pending'
+		err := s.db.SaveListing(req.ID, listing.Title, listing.URL, price, currency, stars, reviewCount)
+		if err != nil {
+			log.Printf("Warning: Failed to save basic listing to database: %v\n", err)
+			continue
+		}
+
+		// Get the listing ID we just created
+		listingID, err := s.db.GetListingIDByURL(req.ID, listing.URL)
+		if err != nil {
+			log.Printf("Warning: Failed to get listing ID for URL %s: %v\n", listing.URL, err)
+			continue
+		}
+		urlToIDMap[listing.URL] = listingID
+	}
+
+	log.Printf("Saved %d basic listings to database\n", len(urlToIDMap))
+
+	// Fetch detail pages and enrich listings incrementally
 	detailFetcher := fetcher.NewDetailFetcher(rodFetcher.GetBrowser())
 	detailParser := parser.NewDetailParser()
 
 	enrichedListings := make([]models.Listing, 0, len(filteredListings))
+	successCount := 0
+	failCount := 0
 
 	for i, listing := range filteredListings {
+		listingID, exists := urlToIDMap[listing.URL]
+		if !exists {
+			log.Printf("Warning: No listing ID found for URL: %s\n", listing.URL)
+			failCount++
+			continue
+		}
+
+		// Send status update
+		s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("📄 Fetching details for listing %d/%d...", i+1, len(filteredListings)))
 		log.Printf("Fetching detail page for listing %d/%d: %s\n", i+1, len(filteredListings), listing.URL)
 
 		// Fetch detail page
 		detailHTML, err := detailFetcher.FetchDetailPage(listing.URL)
 		if err != nil {
 			log.Printf("Warning: Failed to fetch detail page for %s: %v\n", listing.URL, err)
-			// Continue with basic listing data
-			enrichedListings = append(enrichedListings, listing)
+			s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("⚠️ Failed to fetch details for listing %d/%d", i+1, len(filteredListings)))
+			failCount++
+			// Update status to failed
+			s.db.UpdateListingStatus(listingID, "failed")
 			continue
 		}
 
@@ -197,8 +252,8 @@ func (s *Scheduler) processNextRequest() {
 		detailData, err := detailParser.ParseDetailPage(detailHTML)
 		if err != nil {
 			log.Printf("Warning: Failed to parse detail page for %s: %v\n", listing.URL, err)
-			// Continue with basic listing data
-			enrichedListings = append(enrichedListings, listing)
+			s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("⚠️ Failed to parse details for listing %d/%d", i+1, len(filteredListings)))
+			failCount++
 			continue
 		}
 
@@ -213,20 +268,7 @@ func (s *Scheduler) processNextRequest() {
 		listing.NewestReviewDate = detailData.NewestReviewDate
 		listing.Reviews = detailData.Reviews
 
-		enrichedListings = append(enrichedListings, listing)
-
-		// Add delay between detail page fetches
-		if i < len(filteredListings)-1 {
-			time.Sleep(3 * time.Second)
-		}
-	}
-
-	// Save enriched listings to database
-	for _, listing := range enrichedListings {
-		var price *float64
-		var currency *string
-		var stars *float64
-		var reviewCount *int
+		// Update listing in database immediately
 		var isSuperhost *bool
 		var isGuestFavorite *bool
 		var bedrooms *int
@@ -236,18 +278,6 @@ func (s *Scheduler) processNextRequest() {
 		var houseRules *string
 		var newestReviewDate *time.Time
 
-		if listing.Price > 0 {
-			price = &listing.Price
-		}
-		if listing.Currency != "" {
-			currency = &listing.Currency
-		}
-		if listing.Stars > 0 {
-			stars = &listing.Stars
-		}
-		if listing.ReviewCount > 0 {
-			reviewCount = &listing.ReviewCount
-		}
 		if listing.Bedrooms > 0 {
 			bedrooms = &listing.Bedrooms
 		}
@@ -267,20 +297,38 @@ func (s *Scheduler) processNextRequest() {
 		}
 		newestReviewDate = listing.NewestReviewDate
 
-		listingID, err := s.db.SaveEnrichedListing(req.ID, listing.Title, listing.URL, price, currency, stars, reviewCount,
-			isSuperhost, isGuestFavorite, bedrooms, bathrooms, beds, description, houseRules, newestReviewDate)
+		err = s.db.UpdateListingDetails(listingID, isSuperhost, isGuestFavorite, bedrooms, bathrooms, beds, description, houseRules, newestReviewDate)
 		if err != nil {
-			log.Printf("Warning: Failed to save enriched listing to database: %v\n", err)
-			continue
+			log.Printf("Warning: Failed to update listing details for listing %d: %v\n", listingID, err)
+		} else {
+			log.Printf("Updated listing %d with detail information\n", listingID)
 		}
 
-		// Save reviews separately
+		// Save reviews immediately
 		if len(listing.Reviews) > 0 {
+			log.Printf("Saving %d reviews for listing %d\n", len(listing.Reviews), listingID)
 			if err := s.db.SaveReviews(listingID, listing.Reviews); err != nil {
-				log.Printf("Warning: Failed to save reviews for listing %d: %v\n", listingID, err)
+				log.Printf("Error: Failed to save %d reviews for listing %d: %v\n", len(listing.Reviews), listingID, err)
+			} else {
+				log.Printf("Successfully saved %d reviews for listing %d\n", len(listing.Reviews), listingID)
 			}
+		} else {
+			log.Printf("No reviews found for listing %d\n", listingID)
+		}
+
+		enrichedListings = append(enrichedListings, listing)
+		successCount++
+
+		// Send success status
+		s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("✅ Processed listing %d/%d (Bedrooms: %d, Bathrooms: %d, Reviews: %d)", i+1, len(filteredListings), listing.Bedrooms, listing.Bathrooms, len(listing.Reviews)))
+
+		// Add delay between detail page fetches
+		if i < len(filteredListings)-1 {
+			time.Sleep(3 * time.Second)
 		}
 	}
+
+	log.Printf("Detail parsing complete: %d successful, %d failed\n", successCount, failCount)
 
 	// Update request counts
 	if err := s.db.UpdateRequestCounts(req.ID, len(filteredListings), len(htmlPages)); err != nil {

@@ -186,6 +186,11 @@ func (db *DB) UpdateRequestSheetName(requestID int, sheetName string) error {
 
 // SaveListing saves a listing to the database
 func (db *DB) SaveListing(requestID int, title, url string, price *float64, currency *string, stars *float64, reviewCount *int) error {
+	return db.SaveListingWithStatus(requestID, title, url, price, currency, stars, reviewCount, "pending")
+}
+
+// SaveListingWithStatus saves a listing to the database with a specific status
+func (db *DB) SaveListingWithStatus(requestID int, title, url string, price *float64, currency *string, stars *float64, reviewCount *int, status string) error {
 	var priceVal sql.NullFloat64
 	var currencyVal sql.NullString
 	var starsVal sql.NullFloat64
@@ -206,8 +211,18 @@ func (db *DB) SaveListing(requestID int, title, url string, price *float64, curr
 
 	_, err := db.conn.Exec(`
 		INSERT INTO listings (request_id, title, url, price, currency, stars, review_count, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, 'saved')
-	`, requestID, title, url, priceVal, currencyVal, starsVal, reviewCountVal)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	`, requestID, title, url, priceVal, currencyVal, starsVal, reviewCountVal, status)
+	return err
+}
+
+// UpdateListingStatus updates the status of a listing
+func (db *DB) UpdateListingStatus(listingID int, status string) error {
+	_, err := db.conn.Exec(`
+		UPDATE listings
+		SET status = $1
+		WHERE id = $2
+	`, status, listingID)
 	return err
 }
 
@@ -278,6 +293,83 @@ func (db *DB) SaveEnrichedListing(requestID int, title, url string, price *float
 	return listingID, err
 }
 
+// UpdateListingDetails updates an existing listing with detail page information
+func (db *DB) UpdateListingDetails(listingID int, isSuperhost *bool, isGuestFavorite *bool, bedrooms *int, bathrooms *int, beds *int,
+	description *string, houseRules *string, newestReviewDate *time.Time) error {
+	updates := []string{}
+	args := []interface{}{}
+	argIndex := 1
+
+	if isSuperhost != nil {
+		updates = append(updates, fmt.Sprintf("is_superhost = $%d", argIndex))
+		args = append(args, *isSuperhost)
+		argIndex++
+	}
+	if isGuestFavorite != nil {
+		updates = append(updates, fmt.Sprintf("is_guest_favorite = $%d", argIndex))
+		args = append(args, *isGuestFavorite)
+		argIndex++
+	}
+	if bedrooms != nil {
+		updates = append(updates, fmt.Sprintf("bedrooms = $%d", argIndex))
+		args = append(args, *bedrooms)
+		argIndex++
+	}
+	if bathrooms != nil {
+		updates = append(updates, fmt.Sprintf("bathrooms = $%d", argIndex))
+		args = append(args, *bathrooms)
+		argIndex++
+	}
+	if beds != nil {
+		updates = append(updates, fmt.Sprintf("beds = $%d", argIndex))
+		args = append(args, *beds)
+		argIndex++
+	}
+	if description != nil {
+		updates = append(updates, fmt.Sprintf("description = $%d", argIndex))
+		args = append(args, *description)
+		argIndex++
+	}
+	if houseRules != nil {
+		updates = append(updates, fmt.Sprintf("house_rules = $%d", argIndex))
+		args = append(args, *houseRules)
+		argIndex++
+	}
+	if newestReviewDate != nil {
+		updates = append(updates, fmt.Sprintf("newest_review_date = $%d", argIndex))
+		args = append(args, *newestReviewDate)
+		argIndex++
+	}
+
+	if len(updates) == 0 {
+		return nil // Nothing to update
+	}
+
+	// Update status to 'saved' and add listing ID
+	updates = append(updates, "status = 'saved'")
+	args = append(args, listingID)
+
+	query := fmt.Sprintf(`
+		UPDATE listings
+		SET %s
+		WHERE id = $%d
+	`, strings.Join(updates, ", "), argIndex)
+
+	_, err := db.conn.Exec(query, args...)
+	return err
+}
+
+// GetListingIDByURL retrieves a listing ID by URL for a given request
+func (db *DB) GetListingIDByURL(requestID int, url string) (int, error) {
+	var listingID int
+	err := db.conn.QueryRow(`
+		SELECT id FROM listings
+		WHERE request_id = $1 AND url = $2
+		LIMIT 1
+	`, requestID, url).Scan(&listingID)
+	return listingID, err
+}
+
 // SaveReviews saves multiple reviews for a listing
 // Accepts models.Review slice and converts to database format
 func (db *DB) SaveReviews(listingID int, reviews []models.Review) error {
@@ -288,7 +380,7 @@ func (db *DB) SaveReviews(listingID int, reviews []models.Review) error {
 	// Use a transaction for bulk insert
 	tx, err := db.conn.Begin()
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback()
 
@@ -297,10 +389,11 @@ func (db *DB) SaveReviews(listingID int, reviews []models.Review) error {
 		VALUES ($1, $2, $3, $4, $5)
 	`)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to prepare statement: %w", err)
 	}
 	defer stmt.Close()
 
+	savedCount := 0
 	for _, review := range reviews {
 		var scoreVal sql.NullFloat64
 		var timeOnAirbnbVal sql.NullString
@@ -312,13 +405,24 @@ func (db *DB) SaveReviews(listingID int, reviews []models.Review) error {
 			timeOnAirbnbVal = sql.NullString{String: review.TimeOnAirbnb, Valid: true}
 		}
 
-		_, err := stmt.Exec(listingID, review.Date, scoreVal, review.FullText, timeOnAirbnbVal)
-		if err != nil {
-			return err
+		// Ensure date is not zero
+		reviewDate := review.Date
+		if reviewDate.IsZero() {
+			reviewDate = time.Now()
 		}
+
+		_, err := stmt.Exec(listingID, reviewDate, scoreVal, review.FullText, timeOnAirbnbVal)
+		if err != nil {
+			return fmt.Errorf("failed to insert review (listingID=%d, date=%v): %w", listingID, reviewDate, err)
+		}
+		savedCount++
 	}
 
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
 }
 
 // GetRequestByID retrieves a request by ID
