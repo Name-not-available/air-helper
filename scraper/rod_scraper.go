@@ -261,15 +261,6 @@ func (rs *RodScraper) Scrape(url string, maxPages int) ([]string, error) {
 	}
 
 	log.Printf("Scraping completed. Total pages scraped: %d (requested: %d)\n", len(htmlPages), maxPages)
-	
-	// Try to detect total pages available (if shown on page)
-	totalPagesText, err := page.Element("span, div")
-	if err == nil {
-		// Look for pagination info that might show "Page X of Y" or similar
-		allText, _ := page.HTML()
-		// This is a simple check - in a real scenario, you'd parse the pagination element
-		log.Printf("Note: Check page HTML for pagination info to determine total pages available\n")
-	}
 
 	if len(htmlPages) == 0 {
 		log.Println("Warning: No HTML pages collected.")
