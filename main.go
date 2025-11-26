@@ -104,6 +104,269 @@ var allowedUserIDs = map[int64]bool{
 	425120436: true,
 }
 
+// handleCallbackQuery handles callback queries from inline keyboard buttons
+func handleCallbackQuery(bot *tgbotapi.BotAPI, database *db.DB, callback *tgbotapi.CallbackQuery) {
+	userID := callback.From.ID
+	chatID := callback.Message.Chat.ID
+	data := callback.Data
+
+	// Acknowledge callback
+	bot.Send(tgbotapi.NewCallback(callback.ID, ""))
+
+	// Handle different callback types
+	if strings.HasPrefix(data, "config_") {
+		configType := strings.TrimPrefix(data, "config_")
+		handleConfigCallback(bot, database, chatID, userID, configType, callback.Message.MessageID)
+	} else if strings.HasPrefix(data, "set_") {
+		// Format: set_configType_value
+		parts := strings.SplitN(data, "_", 3)
+		if len(parts) == 3 {
+			configType := parts[1]
+			valueStr := parts[2]
+			handleSetConfigValue(bot, database, chatID, userID, configType, valueStr, callback.Message.MessageID)
+		}
+	}
+}
+
+// handleConfigCallback shows options for changing a specific config value
+func handleConfigCallback(bot *tgbotapi.BotAPI, database *db.DB, chatID int64, userID int64, configType string, messageID int) {
+	userConfig, err := database.GetUserConfig(userID)
+	if err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Error loading config: %v", err)))
+		return
+	}
+
+	var text string
+	var keyboard tgbotapi.InlineKeyboardMarkup
+
+	switch configType {
+	case "max_pages":
+		currentValue := userConfig.MaxPages
+		text = fmt.Sprintf("📄 Max Pages\n\nCurrent: %d\n\nSelect new value:", currentValue)
+		keyboard = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("3", "set_max_pages_3"),
+				tgbotapi.NewInlineKeyboardButtonData("5", "set_max_pages_5"),
+				tgbotapi.NewInlineKeyboardButtonData("10", "set_max_pages_10"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("15", "set_max_pages_15"),
+				tgbotapi.NewInlineKeyboardButtonData("20", "set_max_pages_20"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🔙 Back", "config_back"),
+			),
+		)
+	case "min_reviews":
+		currentValue := userConfig.MinReviews
+		text = fmt.Sprintf("⭐ Min Reviews\n\nCurrent: %d\n\nSelect new value:", currentValue)
+		keyboard = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("0", "set_min_reviews_0"),
+				tgbotapi.NewInlineKeyboardButtonData("5", "set_min_reviews_5"),
+				tgbotapi.NewInlineKeyboardButtonData("10", "set_min_reviews_10"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("20", "set_min_reviews_20"),
+				tgbotapi.NewInlineKeyboardButtonData("50", "set_min_reviews_50"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🔙 Back", "config_back"),
+			),
+		)
+	case "min_price":
+		currentValue := userConfig.MinPrice
+		text = fmt.Sprintf("💰 Min Price\n\nCurrent: %.2f\n\nSelect new value:", currentValue)
+		keyboard = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("0", "set_min_price_0"),
+				tgbotapi.NewInlineKeyboardButtonData("50", "set_min_price_50"),
+				tgbotapi.NewInlineKeyboardButtonData("100", "set_min_price_100"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("200", "set_min_price_200"),
+				tgbotapi.NewInlineKeyboardButtonData("500", "set_min_price_500"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🔙 Back", "config_back"),
+			),
+		)
+	case "max_price":
+		currentValue := userConfig.MaxPrice
+		text = fmt.Sprintf("💰 Max Price\n\nCurrent: %.2f\n\nSelect new value:", currentValue)
+		keyboard = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("500", "set_max_price_500"),
+				tgbotapi.NewInlineKeyboardButtonData("1000", "set_max_price_1000"),
+				tgbotapi.NewInlineKeyboardButtonData("2000", "set_max_price_2000"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("3000", "set_max_price_3000"),
+				tgbotapi.NewInlineKeyboardButtonData("5000", "set_max_price_5000"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🔙 Back", "config_back"),
+			),
+		)
+	case "min_stars":
+		currentValue := userConfig.MinStars
+		text = fmt.Sprintf("⭐ Min Stars\n\nCurrent: %.2f\n\nSelect new value:", currentValue)
+		keyboard = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("0.0", "set_min_stars_0"),
+				tgbotapi.NewInlineKeyboardButtonData("3.0", "set_min_stars_3"),
+				tgbotapi.NewInlineKeyboardButtonData("4.0", "set_min_stars_4"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("4.5", "set_min_stars_4.5"),
+				tgbotapi.NewInlineKeyboardButtonData("4.8", "set_min_stars_4.8"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("🔙 Back", "config_back"),
+			),
+		)
+	case "back":
+		// Show main config menu
+		userConfig, err := database.GetUserConfig(userID)
+		if err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Error loading config: %v", err)))
+			return
+		}
+
+		configText := fmt.Sprintf(
+			"⚙️ Current Configuration:\n\n"+
+				"📄 Max Pages: %d\n"+
+				"⭐ Min Reviews: %d\n"+
+				"💰 Min Price: %.2f\n"+
+				"💰 Max Price: %.2f\n"+
+				"⭐ Min Stars: %.2f\n\n"+
+				"Click buttons below to change values:",
+			userConfig.MaxPages, userConfig.MinReviews, userConfig.MinPrice, userConfig.MaxPrice, userConfig.MinStars)
+
+		keyboard = tgbotapi.NewInlineKeyboardMarkup(
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("📄 Max Pages", "config_max_pages"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("⭐ Min Reviews", "config_min_reviews"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("💰 Min Price", "config_min_price"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("💰 Max Price", "config_max_price"),
+			),
+			tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData("⭐ Min Stars", "config_min_stars"),
+			),
+		)
+		text = configText
+	default:
+		return
+	}
+
+	// Edit the message with new keyboard
+	editMsg := tgbotapi.NewEditMessageText(chatID, messageID, text)
+	editMsg.ReplyMarkup = &keyboard
+	bot.Send(editMsg)
+}
+
+// handleSetConfigValue updates a config value and shows confirmation
+func handleSetConfigValue(bot *tgbotapi.BotAPI, database *db.DB, chatID int64, userID int64, configType string, valueStr string, messageID int) {
+	var err error
+	var updateText string
+
+	switch configType {
+	case "max_pages":
+		var value int
+		if _, err := fmt.Sscanf(valueStr, "%d", &value); err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Invalid value: %s", valueStr)))
+			return
+		}
+		err = database.UpdateUserConfig(userID, &value, nil, nil, nil, nil)
+		updateText = fmt.Sprintf("✅ Max Pages updated to %d", value)
+	case "min_reviews":
+		var value int
+		if _, err := fmt.Sscanf(valueStr, "%d", &value); err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Invalid value: %s", valueStr)))
+			return
+		}
+		err = database.UpdateUserConfig(userID, nil, &value, nil, nil, nil)
+		updateText = fmt.Sprintf("✅ Min Reviews updated to %d", value)
+	case "min_price":
+		var value float64
+		if _, err := fmt.Sscanf(valueStr, "%f", &value); err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Invalid value: %s", valueStr)))
+			return
+		}
+		err = database.UpdateUserConfig(userID, nil, nil, &value, nil, nil)
+		updateText = fmt.Sprintf("✅ Min Price updated to %.2f", value)
+	case "max_price":
+		var value float64
+		if _, err := fmt.Sscanf(valueStr, "%f", &value); err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Invalid value: %s", valueStr)))
+			return
+		}
+		err = database.UpdateUserConfig(userID, nil, nil, nil, &value, nil)
+		updateText = fmt.Sprintf("✅ Max Price updated to %.2f", value)
+	case "min_stars":
+		var value float64
+		if _, err := fmt.Sscanf(valueStr, "%f", &value); err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Invalid value: %s", valueStr)))
+			return
+		}
+		err = database.UpdateUserConfig(userID, nil, nil, nil, nil, &value)
+		updateText = fmt.Sprintf("✅ Min Stars updated to %.2f", value)
+	default:
+		bot.Send(tgbotapi.NewMessage(chatID, "Unknown config type"))
+		return
+	}
+
+	if err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("❌ Error updating config: %v", err)))
+		return
+	}
+
+	// Show updated config
+	userConfig, err := database.GetUserConfig(userID)
+	if err != nil {
+		bot.Send(tgbotapi.NewMessage(chatID, updateText))
+		return
+	}
+
+	configText := fmt.Sprintf(
+		"%s\n\n⚙️ Current Configuration:\n\n"+
+			"📄 Max Pages: %d\n"+
+			"⭐ Min Reviews: %d\n"+
+			"💰 Min Price: %.2f\n"+
+			"💰 Max Price: %.2f\n"+
+			"⭐ Min Stars: %.2f\n\n"+
+			"Click buttons below to change values:",
+		updateText, userConfig.MaxPages, userConfig.MinReviews, userConfig.MinPrice, userConfig.MaxPrice, userConfig.MinStars)
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📄 Max Pages", "config_max_pages"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⭐ Min Reviews", "config_min_reviews"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("💰 Min Price", "config_min_price"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("💰 Max Price", "config_max_price"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⭐ Min Stars", "config_min_stars"),
+		),
+	)
+
+	editMsg := tgbotapi.NewEditMessageText(chatID, messageID, configText)
+	editMsg.ReplyMarkup = &keyboard
+	bot.Send(editMsg)
+}
+
 // runTelegramBot runs the scraper as a Telegram bot
 func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentialsPath string) {
 	// Refresh environment variables (Windows-specific)
@@ -179,6 +442,21 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 
 	// Handle updates
 	for update := range updates {
+		// Handle callback queries (button presses)
+		if update.CallbackQuery != nil {
+			userID := update.CallbackQuery.From.ID
+			if !allowedUserIDs[userID] {
+				log.Printf("Unauthorized user attempted to use callback: %d\n", userID)
+				bot.Send(tgbotapi.NewCallback(update.CallbackQuery.ID, "Sorry, you are not authorized."))
+				continue
+			}
+
+			if update.CallbackQuery.Message != nil {
+				handleCallbackQuery(bot, database, update.CallbackQuery)
+			}
+			continue
+		}
+
 		if update.Message == nil {
 			continue
 		}
@@ -230,8 +508,49 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 					bot.Send(pinMsg)
 				}
 			case "help":
-				helpText := "Commands:\n/start - Start the bot\n/help - Show this help\n\nJust send me an Airbnb search URL to scrape listings! Results will be automatically added to Google Sheets."
+				helpText := "Commands:\n/start - Start the bot\n/help - Show this help\n/config - Configure filter settings\n\nJust send me an Airbnb search URL to scrape listings! Results will be automatically added to Google Sheets."
 				msg := tgbotapi.NewMessage(update.Message.Chat.ID, helpText)
+				bot.Send(msg)
+			case "config":
+				// Show config with buttons
+				userConfig, err := database.GetUserConfig(userID)
+				if err != nil {
+					msg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("Error loading config: %v", err))
+					bot.Send(msg)
+					continue
+				}
+
+				configText := fmt.Sprintf(
+					"⚙️ Current Configuration:\n\n"+
+						"📄 Max Pages: %d\n"+
+						"⭐ Min Reviews: %d\n"+
+						"💰 Min Price: %.2f\n"+
+						"💰 Max Price: %.2f\n"+
+						"⭐ Min Stars: %.2f\n\n"+
+						"Click buttons below to change values:",
+					userConfig.MaxPages, userConfig.MinReviews, userConfig.MinPrice, userConfig.MaxPrice, userConfig.MinStars)
+
+				// Create inline keyboard
+				keyboard := tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("📄 Max Pages", "config_max_pages"),
+					),
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("⭐ Min Reviews", "config_min_reviews"),
+					),
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("💰 Min Price", "config_min_price"),
+					),
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("💰 Max Price", "config_max_price"),
+					),
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("⭐ Min Stars", "config_min_stars"),
+					),
+				)
+
+				msg := tgbotapi.NewMessage(update.Message.Chat.ID, configText)
+				msg.ReplyMarkup = keyboard
 				bot.Send(msg)
 			case "clear":
 				// Clear the spreadsheet (write empty data)

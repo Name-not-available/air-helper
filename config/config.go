@@ -37,7 +37,7 @@ func GetDefaultConfig() *FilterConfig {
 	cfg := &FilterConfig{}
 	cfg.Filters.MinReviews = 0
 	cfg.Filters.MinPrice = 0
-	cfg.Filters.MaxPrice = 1000000000
+	cfg.Filters.MaxPrice = 2000
 	cfg.Filters.MinStars = 0.0
 	return cfg
 }

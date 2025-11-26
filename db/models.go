@@ -2,6 +2,8 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -64,7 +66,7 @@ func (db *DB) GetUserConfig(userID int64) (*UserConfig, error) {
 			MaxPages:   5,
 			MinReviews: 10,
 			MinPrice:   0,
-			MaxPrice:   30000000,
+			MaxPrice:   2000,
 			MinStars:   4.0,
 		}
 		_, err = db.conn.Exec(`
@@ -205,5 +207,56 @@ func (db *DB) GetRequestByID(requestID int) (*Request, error) {
 	}
 	req.SheetName = sheetName
 	return &req, nil
+}
+
+// UpdateUserConfig updates user configuration
+func (db *DB) UpdateUserConfig(userID int64, maxPages *int, minReviews *int, minPrice *float64, maxPrice *float64, minStars *float64) error {
+	// Build dynamic update query
+	updates := []string{}
+	args := []interface{}{}
+	argIndex := 1
+
+	if maxPages != nil {
+		updates = append(updates, fmt.Sprintf("max_pages = $%d", argIndex))
+		args = append(args, *maxPages)
+		argIndex++
+	}
+	if minReviews != nil {
+		updates = append(updates, fmt.Sprintf("min_reviews = $%d", argIndex))
+		args = append(args, *minReviews)
+		argIndex++
+	}
+	if minPrice != nil {
+		updates = append(updates, fmt.Sprintf("min_price = $%d", argIndex))
+		args = append(args, *minPrice)
+		argIndex++
+	}
+	if maxPrice != nil {
+		updates = append(updates, fmt.Sprintf("max_price = $%d", argIndex))
+		args = append(args, *maxPrice)
+		argIndex++
+	}
+	if minStars != nil {
+		updates = append(updates, fmt.Sprintf("min_stars = $%d", argIndex))
+		args = append(args, *minStars)
+		argIndex++
+	}
+
+	if len(updates) == 0 {
+		return nil // Nothing to update
+	}
+
+	// Add updated_at and user_id
+	updates = append(updates, fmt.Sprintf("updated_at = CURRENT_TIMESTAMP"))
+	args = append(args, userID)
+
+	query := fmt.Sprintf(`
+		UPDATE user_configs
+		SET %s
+		WHERE user_id = $%d
+	`, strings.Join(updates, ", "), argIndex)
+
+	_, err := db.conn.Exec(query, args...)
+	return err
 }
 
