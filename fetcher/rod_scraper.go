@@ -3,7 +3,9 @@ package fetcher
 import (
 	"fmt"
 	"log"
+	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -131,6 +133,97 @@ func (rf *RodFetcher) Close() error {
 	return nil
 }
 
+// findNextPageLink finds the next page link within the pagination navigation.
+// It scopes the search to nav[aria-label='Search results pagination'] to avoid
+// clicking on carousel/calendar controls. Returns the href URL, the element, and any error.
+// Selectors tried in order:
+//   - a[rel='next'] within the nav
+//   - a[aria-label='Next'] or a[aria-label='next'] within the nav
+//   - button[data-testid='pagination-right-button'] within the nav
+func (rf *RodFetcher) findNextPageLink(page *rod.Page) (string, *rod.Element, error) {
+	// First, try to find the pagination nav
+	nav, err := page.Timeout(3 * time.Second).Element("nav[aria-label='Search results pagination']")
+	if err != nil {
+		return "", nil, fmt.Errorf("pagination nav not found: %w", err)
+	}
+
+	// Strategy 1: Look for link with rel='next' within the nav
+	nextLink, err := nav.Timeout(2 * time.Second).Element("a[rel='next']")
+	if err == nil {
+		href, _ := nextLink.Attribute("href")
+		if href != nil && *href != "" {
+			return *href, nextLink, nil
+		}
+	}
+
+	// Strategy 2: Look for link with aria-label='Next' within the nav
+	nextLink, err = nav.Timeout(2 * time.Second).Element("a[aria-label='Next'], a[aria-label='next']")
+	if err == nil {
+		href, _ := nextLink.Attribute("href")
+		if href != nil && *href != "" {
+			return *href, nextLink, nil
+		}
+	}
+
+	// Strategy 3: Look for button with pagination data-testid within the nav
+	nextButton, err := nav.Timeout(2 * time.Second).Element("button[data-testid='pagination-right-button']")
+	if err == nil {
+		// For buttons, we need to check if they have an href or if we need to click
+		// Try to find a parent link or check if button triggers navigation
+		// For now, return error to use click fallback - but this should be rare
+		return "", nextButton, fmt.Errorf("found button but no href - button-based pagination not yet supported")
+	}
+
+	// Strategy 4: Look for any link/button with "next" in aria-label within nav
+	allLinks, _ := nav.Elements("a, button")
+	for _, elem := range allLinks {
+		ariaLabelPtr, _ := elem.Attribute("aria-label")
+		if ariaLabelPtr != nil {
+			ariaLabel := strings.ToLower(*ariaLabelPtr)
+			if strings.Contains(ariaLabel, "next") && !strings.Contains(ariaLabel, "previous") {
+				visible, _ := elem.Visible()
+				if visible {
+					// Check if it's a link with href
+					href, _ := elem.Attribute("href")
+					if href != nil && *href != "" {
+						return *href, elem, nil
+					}
+				}
+			}
+		}
+	}
+
+	return "", nil, fmt.Errorf("no next page link found in pagination nav")
+}
+
+// extractItemsOffset extracts the items_offset parameter from a URL.
+// Returns -1 if not found or if parsing fails.
+func (rf *RodFetcher) extractItemsOffset(urlStr string) int {
+	if urlStr == "" {
+		return -1
+	}
+
+	// Parse URL to get query parameters
+	parsedURL, err := url.Parse(urlStr)
+	if err != nil {
+		return -1
+	}
+
+	// Get items_offset from query
+	offsetStr := parsedURL.Query().Get("items_offset")
+	if offsetStr == "" {
+		return -1
+	}
+
+	// Parse to int
+	offset, err := strconv.Atoi(offsetStr)
+	if err != nil {
+		return -1
+	}
+
+	return offset
+}
+
 // Fetch implements the Fetcher interface
 func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 	var htmlPages []string
@@ -177,97 +270,105 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to get HTML: %w", err)
 	}
-		htmlPages = append(htmlPages, html)
-		pageCount++
-		log.Printf("Fetched page %d/%d\n", pageCount, maxPages)
+	htmlPages = append(htmlPages, html)
+	pageCount++
+	
+	// Get current URL and extract items_offset for validation
+	currentURLResult, err := page.Eval(`() => window.location.href`)
+	currentURLStr := ""
+	if err == nil && currentURLResult != nil {
+		currentURLStr = currentURLResult.Value.Str()
+	}
+	log.Printf("Fetched page %d/%d (URL: %s)\n", pageCount, maxPages, currentURLStr)
+
+	// Extract items_offset from current URL for validation
+	currentOffset := rf.extractItemsOffset(currentURLStr)
+	log.Printf("Current items_offset: %d\n", currentOffset)
 
 	// Handle pagination
 	for pageCount < maxPages {
-		// Try multiple strategies to find the next page button/link
-		var nextButton *rod.Element
-		var err error
+		// Get current URL before navigation attempt
+		beforeURLResult, err := page.Eval(`() => window.location.href`)
+		beforeURLStr := ""
+		if err == nil && beforeURLResult != nil {
+			beforeURLStr = beforeURLResult.Value.Str()
+		}
+		log.Printf("Before pagination attempt - Current URL: %s\n", beforeURLStr)
 
-		// Strategy 1: Look for button with "Next" aria-label
-		nextButton, err = page.Timeout(3 * time.Second).Element("button[aria-label*='Next'], button[aria-label*='next']")
-		if err != nil {
-			// Strategy 2: Look for link with "Next" aria-label
-			nextButton, err = page.Timeout(3 * time.Second).Element("a[aria-label*='Next'], a[aria-label*='next']")
-		}
-		if err != nil {
-			// Strategy 3: Look for pagination button with arrow icon
-			nextButton, err = page.Timeout(3 * time.Second).Element("button[data-testid*='pagination'], a[data-testid*='pagination']")
-		}
-		if err != nil {
-			// Strategy 4: Look for any button/link containing "next" in text or aria-label (case insensitive)
-			nextButton, err = page.Timeout(3 * time.Second).Element("button, a")
-			if err == nil {
-				// Check if any button has "next" in its text or aria-label
-				buttons, _ := page.Elements("button, a")
-				nextButton = nil
-				for _, btn := range buttons {
-					text, _ := btn.Text()
-					ariaLabelPtr, _ := btn.Attribute("aria-label")
-					ariaLabel := ""
-					if ariaLabelPtr != nil {
-						ariaLabel = *ariaLabelPtr
-					}
-					if (strings.Contains(strings.ToLower(text), "next") ||
-						strings.Contains(strings.ToLower(ariaLabel), "next")) &&
-						!strings.Contains(strings.ToLower(text), "previous") &&
-						!strings.Contains(strings.ToLower(ariaLabel), "previous") {
-						visible, _ := btn.Visible()
-						if visible {
-							nextButton = btn
-							break
-						}
-					}
-				}
-				if nextButton == nil {
-					err = fmt.Errorf("no next button found")
-				}
-			}
-		}
-
-		if err != nil || nextButton == nil {
-			// No next button found, stop pagination
-			log.Printf("No more pages found after page %d\n", pageCount)
+		// Find next page link within pagination nav
+		nextURL, nextElement, err := rf.findNextPageLink(page)
+		if err != nil || nextURL == "" {
+			log.Printf("No more pages found after page %d: %v\n", pageCount, err)
 			break
 		}
 
-		// Check if button is visible and enabled
-		visible, _ := nextButton.Visible()
-		if !visible {
-			log.Printf("Next button not visible, stopping pagination\n")
+		// Log what we found
+		if nextElement != nil {
+			tagNameResult, err := nextElement.Eval(`() => this.tagName`)
+			tagName := ""
+			if err == nil && tagNameResult != nil {
+				tagName = tagNameResult.Value.Str()
+			}
+			ariaLabel, _ := nextElement.Attribute("aria-label")
+			href, _ := nextElement.Attribute("href")
+			log.Printf("Found next page element - Tag: %s, aria-label: %v, href: %v\n", 
+				tagName, ariaLabel, href)
+		}
+		log.Printf("Next page URL: %s\n", nextURL)
+
+		// Normalize URL (handle relative URLs)
+		if strings.HasPrefix(nextURL, "/") {
+			nextURL = "https://www.airbnb.com" + nextURL
+		}
+
+		// Navigate to next page
+		if err := page.Navigate(nextURL); err != nil {
+			log.Printf("Failed to navigate to next page: %v\n", err)
 			break
 		}
 
-		// Scroll to the button to ensure it's in view
-		nextButton.ScrollIntoView()
-		time.Sleep(1 * time.Second) // Wait after scrolling
-
-		// Use JavaScript click which is more reliable and doesn't timeout
-		// Try JavaScript click first (more reliable), fallback to regular click with timeout
-		_, err = nextButton.Eval(`() => this.click()`)
-		if err != nil {
-			// Fallback to regular click with timeout
-			err = nextButton.Timeout(10 * time.Second).Click("left", 1)
-			if err != nil {
-				log.Printf("Failed to click next button: %v\n", err)
-				break
-			}
-		}
-
-		// Wait for new content to load - wait longer for dynamic content
+		// Wait for page to load
 		page.WaitLoad()
-		time.Sleep(4 * time.Second) // Increased wait time for content to load
+		time.Sleep(3 * time.Second) // Give JavaScript time to render
 
-		// Wait for the page to stabilize (content has changed) - with error handling
+		// Wait for page to stabilize
 		if err := page.Timeout(15 * time.Second).WaitStable(500 * time.Millisecond); err != nil {
-			log.Printf("Warning: Page did not stabilize after click, continuing anyway: %v\n", err)
+			log.Printf("Warning: Page did not stabilize after navigation, continuing anyway: %v\n", err)
 		}
 
 		// Additional wait to ensure listings are rendered
 		time.Sleep(2 * time.Second)
+
+		// Get URL after navigation to validate progress
+		afterURLResult, err := page.Eval(`() => window.location.href`)
+		afterURLStr := ""
+		if err == nil && afterURLResult != nil {
+			afterURLStr = afterURLResult.Value.Str()
+		}
+		log.Printf("After navigation - Current URL: %s\n", afterURLStr)
+
+		// Validate that we actually moved to a new page by checking items_offset
+		newOffset := rf.extractItemsOffset(afterURLStr)
+		log.Printf("New items_offset: %d (previous: %d)\n", newOffset, currentOffset)
+
+		if newOffset <= currentOffset && newOffset >= 0 {
+			log.Printf("Warning: items_offset did not increase (was %d, now %d). Page may not have advanced.\n", 
+				currentOffset, newOffset)
+			// Check HTML content as fallback validation
+			html, err := page.HTML()
+			if err != nil {
+				log.Printf("Failed to get HTML for validation: %v\n", err)
+				break
+			}
+			// Compare with last page - if HTML is identical, it's a duplicate
+			if len(htmlPages) > 0 && html == htmlPages[len(htmlPages)-1] {
+				log.Printf("HTML is identical to previous page, stopping pagination\n")
+				break
+			}
+		}
+
+		// Update current offset for next iteration
+		currentOffset = newOffset
 
 		// Get HTML content
 		html, err := page.HTML()
@@ -281,7 +382,8 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 		if len(htmlPages) > 0 {
 			// Compare with last page - if HTML is identical, it's a duplicate
 			if html == htmlPages[len(htmlPages)-1] {
-				log.Printf("Warning: Page %d HTML is identical to previous page, skipping duplicate\n", pageCount+1)
+				log.Printf("Warning: Page %d HTML is identical to previous page (offset: %d), skipping duplicate\n", 
+					pageCount+1, newOffset)
 				isDuplicate = true
 			}
 		}
@@ -289,7 +391,8 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 		if !isDuplicate {
 			htmlPages = append(htmlPages, html)
 			pageCount++
-			log.Printf("Fetched page %d/%d (HTML size: %d bytes)\n", pageCount, maxPages, len(html))
+			log.Printf("Fetched page %d/%d (HTML size: %d bytes, offset: %d)\n", 
+				pageCount, maxPages, len(html), newOffset)
 		} else {
 			// If we got a duplicate, stop pagination
 			log.Printf("Stopping pagination due to duplicate content\n")
