@@ -276,15 +276,25 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 			break
 		}
 
-		// Check if we got the same content (simple check - compare HTML length)
-		// This is a basic check, but if HTML is identical, we're not getting new content
-		if len(htmlPages) > 0 && len(html) == len(htmlPages[len(htmlPages)-1]) {
-			log.Printf("Warning: Page %d HTML length matches previous page, might be duplicate content\n", pageCount+1)
+		// Check if we got the same content (compare HTML to detect duplicates)
+		isDuplicate := false
+		if len(htmlPages) > 0 {
+			// Compare with last page - if HTML is identical, it's a duplicate
+			if html == htmlPages[len(htmlPages)-1] {
+				log.Printf("Warning: Page %d HTML is identical to previous page, skipping duplicate\n", pageCount+1)
+				isDuplicate = true
+			}
 		}
 
-		htmlPages = append(htmlPages, html)
-		pageCount++
-		log.Printf("Fetched page %d/%d (HTML size: %d bytes)\n", pageCount, maxPages, len(html))
+		if !isDuplicate {
+			htmlPages = append(htmlPages, html)
+			pageCount++
+			log.Printf("Fetched page %d/%d (HTML size: %d bytes)\n", pageCount, maxPages, len(html))
+		} else {
+			// If we got a duplicate, stop pagination
+			log.Printf("Stopping pagination due to duplicate content\n")
+			break
+		}
 	}
 
 	log.Printf("Fetching completed. Total pages fetched: %d (requested: %d)\n", len(htmlPages), maxPages)

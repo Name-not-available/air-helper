@@ -233,9 +233,9 @@ func (s *Scheduler) processNextRequest() {
 	successMsg := fmt.Sprintf(
 		"✅ Successfully fetched and added %d listings to Google Sheets!\n\n"+
 			"Found %d listings before filtering.\n"+
-			"Pages fetched: %d\n\n"+
+			"Pages: %d fetched (requested: %d)\n\n"+
 			"View spreadsheet: %s",
-		len(filteredListings), len(allListings), len(htmlPages), sheetURL)
+		len(filteredListings), len(allListings), len(htmlPages), userConfig.MaxPages, sheetURL)
 	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, successMsg)
 }
 

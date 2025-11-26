@@ -45,9 +45,26 @@ func (cf *CollyFetcher) Fetch(url string, maxPages int) ([]string, error) {
 
 	// Set up callback to collect HTML from response
 	cf.collector.OnResponse(func(r *colly.Response) {
-		htmlPages = append(htmlPages, string(r.Body))
+		urlStr := r.Request.URL.String()
+		htmlContent := string(r.Body)
+
+		// Check if we've already visited this URL to prevent duplicates
+		if visited[urlStr] {
+			log.Printf("Skipping duplicate URL: %s\n", urlStr)
+			return
+		}
+
+		// Check if HTML content is duplicate (compare with last page)
+		if len(htmlPages) > 0 && htmlContent == htmlPages[len(htmlPages)-1] {
+			log.Printf("Skipping duplicate HTML content from URL: %s\n", urlStr)
+			visited[urlStr] = true
+			return
+		}
+
+		visited[urlStr] = true
+		htmlPages = append(htmlPages, htmlContent)
 		pageCount++
-		visited[r.Request.URL.String()] = true
+		log.Printf("Fetched page %d/%d: %s\n", pageCount, maxPages, urlStr)
 	})
 
 	// Visit the initial URL
@@ -56,20 +73,30 @@ func (cf *CollyFetcher) Fetch(url string, maxPages int) ([]string, error) {
 	}
 
 	// Handle pagination - look for page links inside the pagination nav
+	// Visit all pagination links, but duplicates will be filtered by visited map
 	cf.collector.OnHTML("nav[aria-label='Search results pagination'] a", func(e *colly.HTMLElement) {
 		if pageCount >= maxPages {
 			return
 		}
+
 		nextURL := e.Attr("href")
-		if nextURL != "" {
-			// Handle relative URLs
-			if strings.HasPrefix(nextURL, "/") {
-				nextURL = "https://www.airbnb.com" + nextURL
-			}
-			// Avoid visiting the same URL twice
-			if !visited[nextURL] {
-				cf.collector.Visit(nextURL)
-			}
+		if nextURL == "" {
+			return
+		}
+
+		// Handle relative URLs
+		if strings.HasPrefix(nextURL, "/") {
+			nextURL = "https://www.airbnb.com" + nextURL
+		}
+
+		// Check if we've already visited this URL
+		if visited[nextURL] {
+			return
+		}
+
+		// Only visit if we haven't reached max pages
+		if pageCount < maxPages {
+			cf.collector.Visit(nextURL)
 		}
 	})
 
@@ -80,6 +107,8 @@ func (cf *CollyFetcher) Fetch(url string, maxPages int) ([]string, error) {
 		log.Println("Warning: No HTML pages collected. Bnb may be using JavaScript rendering.")
 		log.Println("Consider upgrading to a headless browser implementation.")
 	}
+
+	log.Printf("Fetching completed. Total pages fetched: %d (requested: %d)\n", len(htmlPages), maxPages)
 
 	return htmlPages, nil
 }
