@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"bnb-fetcher/models"
 
@@ -112,54 +113,199 @@ func (dp *DetailParser) extractGuestFavorite(doc *goquery.Document) bool {
 	return false
 }
 
-// extractRoomCounts extracts bedrooms, bathrooms, and beds count (supports decimal values)
+// unicodeFractionMap maps unicode fraction characters to their decimal values
+var unicodeFractionMap = map[rune]float64{
+	'¼': 0.25,
+	'½': 0.5,
+	'¾': 0.75,
+	'⅓': 1.0 / 3.0,
+	'⅔': 2.0 / 3.0,
+	'⅛': 0.125,
+	'⅜': 0.375,
+	'⅝': 0.625,
+	'⅞': 0.875,
+	'⅕': 0.2,
+	'⅖': 0.4,
+	'⅗': 0.6,
+	'⅘': 0.8,
+	'⅙': 1.0 / 6.0,
+	'⅚': 5.0 / 6.0,
+	'⅑': 1.0 / 9.0,
+	'⅒': 0.1,
+}
+
+// normalizeWhitespace replaces various unicode whitespace characters with regular spaces
+func normalizeWhitespace(text string) string {
+	// Replace non-breaking spaces and other unicode whitespace with regular spaces
+	normalized := strings.Builder{}
+	for _, r := range text {
+		if unicode.IsSpace(r) {
+			normalized.WriteRune(' ')
+		} else {
+			normalized.WriteRune(r)
+		}
+	}
+	// Collapse multiple spaces into one
+	result := strings.Join(strings.Fields(normalized.String()), " ")
+	return result
+}
+
+// extractNumericToken extracts a numeric token from text (supports decimals, fractions, unicode fractions)
+func extractNumericToken(text string) string {
+	if text == "" {
+		return ""
+	}
+
+	// Build pattern to match various numeric formats:
+	// - Decimal: 2.5, 2,5
+	// - Mixed fraction: 2 1/2, 2½
+	// - Simple fraction: 1/2, ½
+	// - Unicode fractions: ½, ¼, etc.
+
+	// Pattern: (optional whole number) (optional unicode fraction OR space + fraction)
+	// This matches: "2.5", "2,5", "2 1/2", "2½", "1/2", "½"
+	pattern := regexp.MustCompile(`(?:\d+[.,]\d+|\d+\s+\d+/\d+|\d+[¼½¾⅓⅔⅛⅜⅝⅞⅕⅖⅗⅘⅙⅚⅑⅒]|\d+/\d+|[¼½¾⅓⅔⅛⅜⅝⅞⅕⅖⅗⅘⅙⅚⅑⅒]|\d+)`)
+	matches := pattern.FindStringSubmatch(text)
+	if len(matches) > 0 {
+		return strings.TrimSpace(matches[0])
+	}
+	return ""
+}
+
+// parseRoomValue parses a numeric token string into a float64 value
+// Supports: decimals (2.5), mixed fractions (2 1/2), simple fractions (1/2), unicode fractions (2½, ½)
+func parseRoomValue(token string) (float64, error) {
+	if token == "" {
+		return 0, fmt.Errorf("empty token")
+	}
+
+	// Normalize whitespace and replace comma with dot for decimal
+	token = normalizeWhitespace(token)
+	token = strings.ReplaceAll(token, ",", ".")
+	token = strings.TrimSpace(token)
+
+	// Check for unicode fraction with whole number: "2½"
+	for whole, fraction := range unicodeFractionMap {
+		pattern := regexp.MustCompile(fmt.Sprintf(`^(\d+)?\s*%c$`, whole))
+		matches := pattern.FindStringSubmatch(token)
+		if len(matches) > 0 {
+			wholeNum := 0.0
+			if matches[1] != "" {
+				var err error
+				wholeNum, err = strconv.ParseFloat(matches[1], 64)
+				if err != nil {
+					continue
+				}
+			}
+			return wholeNum + fraction, nil
+		}
+	}
+
+	// Check for mixed fraction: "2 1/2" or "2 1 / 2"
+	mixedPattern := regexp.MustCompile(`^(\d+)\s+(\d+)\s*/\s*(\d+)$`)
+	matches := mixedPattern.FindStringSubmatch(token)
+	if len(matches) >= 4 {
+		whole, _ := strconv.ParseFloat(matches[1], 64)
+		numerator, _ := strconv.ParseFloat(matches[2], 64)
+		denominator, _ := strconv.ParseFloat(matches[3], 64)
+		if denominator != 0 {
+			return whole + (numerator / denominator), nil
+		}
+	}
+
+	// Check for simple fraction: "1/2"
+	simpleFractionPattern := regexp.MustCompile(`^(\d+)\s*/\s*(\d+)$`)
+	matches = simpleFractionPattern.FindStringSubmatch(token)
+	if len(matches) >= 3 {
+		numerator, _ := strconv.ParseFloat(matches[1], 64)
+		denominator, _ := strconv.ParseFloat(matches[2], 64)
+		if denominator != 0 {
+			return numerator / denominator, nil
+		}
+	}
+
+	// Check for standalone unicode fraction: "½"
+	for whole, fraction := range unicodeFractionMap {
+		if token == string(whole) {
+			return fraction, nil
+		}
+	}
+
+	// Try parsing as regular decimal/integer
+	val, err := strconv.ParseFloat(token, 64)
+	if err != nil {
+		return 0, fmt.Errorf("unable to parse token: %s", token)
+	}
+	return val, nil
+}
+
+// extractRoomCounts extracts bedrooms, bathrooms, and beds count (supports decimal values, fractions, unicode fractions)
 func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bathrooms, beds float64) {
-	numberPattern := regexp.MustCompile(`(\d+(?:\.\d+)?)`)
+	// Build a pattern that matches various numeric formats
+	// This pattern captures: decimals, mixed fractions, unicode fractions, simple fractions
+	numberTokenPattern := `(?:\d+[.,]\d+|\d+\s+\d+/\d+|\d+[¼½¾⅓⅔⅛⅜⅝⅞⅕⅖⅗⅘⅙⅚⅑⅒]|\d+/\d+|[¼½¾⅓⅔⅛⅜⅝⅞⅕⅖⅗⅘⅙⅚⅑⅒]|\d+)`
+
+	// Helper to validate room count values (reject unreasonable numbers)
+	isValidRoomCount := func(val float64) bool {
+		return val > 0 && val <= 20 // Sanity check: no listing has >20 rooms
+	}
 
 	// First, try to find in specific data-testid elements (most reliable)
-	doc.Find("[data-testid*='bedroom'], [data-testid*='bathroom'], [data-testid*='bed'], [data-testid*='room']").Each(func(i int, s *goquery.Selection) {
+	// REMOVED [data-testid*='room'] as it's too broad and matches unrelated elements
+	doc.Find("[data-testid*='bedroom'], [data-testid*='bathroom'], [data-testid*='bed']").Each(func(i int, s *goquery.Selection) {
 		text := strings.TrimSpace(s.Text())
 		testid, _ := s.Attr("data-testid")
 		testid = strings.ToLower(testid)
 
-		// Extract number from text
-		matches := numberPattern.FindStringSubmatch(text)
-		if len(matches) > 1 {
-			if val, err := strconv.ParseFloat(matches[1], 64); err == nil {
-				if strings.Contains(testid, "bedroom") || strings.Contains(testid, "br") {
-					if bedrooms == 0 {
-						bedrooms = val
-					}
-				} else if strings.Contains(testid, "bathroom") || strings.Contains(testid, "bath") {
-					if bathrooms == 0 {
-						bathrooms = val
-					}
-				} else if strings.Contains(testid, "bed") && !strings.Contains(testid, "bedroom") {
-					if beds == 0 {
-						beds = val
-					}
-				}
+		// Extract numeric token from text (supports decimals, fractions, unicode fractions)
+		rawToken := extractNumericToken(text)
+		if rawToken == "" {
+			return
+		}
+
+		// Parse the token to float64
+		val, err := parseRoomValue(rawToken)
+		if err != nil || !isValidRoomCount(val) {
+			return
+		}
+
+		// Prioritize exact matches first
+		if strings.Contains(testid, "bedroom") {
+			if bedrooms == 0 {
+				bedrooms = val
+			}
+		} else if strings.Contains(testid, "bathroom") {
+			// Only match "bathroom" explicitly, not just "bath" to avoid false matches
+			if bathrooms == 0 {
+				bathrooms = val
+			}
+		} else if strings.Contains(testid, "bed") && !strings.Contains(testid, "bedroom") {
+			if beds == 0 {
+				beds = val
 			}
 		}
 	})
 
 	// Get all text content that might contain room info
-	fullText := strings.ToLower(doc.Text())
+	fullText := doc.Text()
+	fullTextLower := strings.ToLower(fullText)
 
-	// More comprehensive patterns (case-insensitive)
+	// More comprehensive patterns (case-insensitive) with broader numeric token matching
 	patterns := []struct {
-		re    *regexp.Regexp
-		field *float64
+		re            *regexp.Regexp
+		field         *float64
+		skipIfBedroom bool
 	}{
 		// Bedrooms patterns
-		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:bedroom|br|bedrooms)`), &bedrooms},
-		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*br\b`), &bedrooms},
-		// Bathrooms patterns
-		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:bathroom|ba|bathrooms|bath)`), &bathrooms},
-		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*ba\b`), &bathrooms},
+		{regexp.MustCompile(`(?i)(` + numberTokenPattern + `)\s*(?:bedroom|bedrooms|br)\b`), &bedrooms, false},
+		{regexp.MustCompile(`(?i)(` + numberTokenPattern + `)\s*br\b`), &bedrooms, false},
+		// Bathrooms patterns - be more specific to avoid false matches
+		// Match "1 bathroom", "1.5 bathrooms", "2½ bathrooms", "2 1/2 bathrooms" but not "Room 61 bathroom"
+		{regexp.MustCompile(`(?i)\b(` + numberTokenPattern + `)\s*(?:bathroom|bathrooms|bath)\b`), &bathrooms, false},
+		// Match "1 ba" with word boundary to avoid matching room numbers
+		{regexp.MustCompile(`(?i)\b(` + numberTokenPattern + `)\s+ba\b`), &bathrooms, false},
 		// Beds patterns - match "bed" or "beds" but not "bedroom" or "bedrooms"
-		// We'll handle this by checking the match doesn't contain "room" after "bed"
-		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s+bed(?:s)?\b`), &beds},
+		{regexp.MustCompile(`(?i)(` + numberTokenPattern + `)\s+bed(?:s)?\b`), &beds, true},
 	}
 
 	for _, p := range patterns {
@@ -167,15 +313,15 @@ func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bath
 			matches := p.re.FindStringSubmatch(fullText)
 			if len(matches) > 1 {
 				// For beds pattern, check that it's not part of "bedroom"
-				if p.field == &beds {
+				if p.skipIfBedroom {
 					// Get the full match to check context
 					fullMatch := matches[0]
-					matchIndex := strings.Index(strings.ToLower(fullText), strings.ToLower(fullMatch))
+					matchIndex := strings.Index(fullTextLower, strings.ToLower(fullMatch))
 					if matchIndex >= 0 {
 						// Check the next few characters after the match
 						afterMatch := ""
-						if matchIndex+len(fullMatch) < len(fullText) {
-							afterMatch = strings.ToLower(fullText[matchIndex+len(fullMatch):])
+						if matchIndex+len(fullMatch) < len(fullTextLower) {
+							afterMatch = fullTextLower[matchIndex+len(fullMatch):]
 							// If "room" follows immediately, skip this match (it's "bedroom")
 							if strings.HasPrefix(afterMatch, "room") {
 								continue
@@ -183,24 +329,31 @@ func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bath
 						}
 					}
 				}
-				if val, err := strconv.ParseFloat(matches[1], 64); err == nil {
+
+				// Parse the numeric token (supports decimals, fractions, unicode fractions)
+				token := matches[1]
+				val, err := parseRoomValue(token)
+				if err == nil && isValidRoomCount(val) {
 					*p.field = val
 				}
 			}
 		}
 	}
 
-	// Try to find in summary sections (common Airbnb pattern: "1 bed, 1 bath")
-	summaryPattern := regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:bed|br)\s*[,\s]+\s*(\d+(?:\.\d+)?)\s*(?:bath|ba)`)
+	// Try to find in summary sections (common Airbnb pattern: "1 bed, 1 bath" or "3 beds, 2½ baths")
+	// More flexible pattern: allows comma, space, or both between bed and bath counts
+	summaryPattern := regexp.MustCompile(`(?i)(` + numberTokenPattern + `)\s*(?:bed|beds|br)\s*[,]?\s*(` + numberTokenPattern + `)\s*(?:bath|baths|ba)`)
 	matches := summaryPattern.FindStringSubmatch(fullText)
 	if len(matches) >= 3 {
 		if beds == 0 {
-			if val, err := strconv.ParseFloat(matches[1], 64); err == nil {
+			bedToken := matches[1]
+			if val, err := parseRoomValue(bedToken); err == nil && isValidRoomCount(val) {
 				beds = val
 			}
 		}
 		if bathrooms == 0 {
-			if val, err := strconv.ParseFloat(matches[2], 64); err == nil {
+			bathToken := matches[2]
+			if val, err := parseRoomValue(bathToken); err == nil && isValidRoomCount(val) {
 				bathrooms = val
 			}
 		}
@@ -214,7 +367,7 @@ func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bath
 			re := regexp.MustCompile(`"numberOfBedrooms"\s*:\s*(\d+(?:\.\d+)?)`)
 			matches := re.FindStringSubmatch(jsonText)
 			if len(matches) > 1 && bedrooms == 0 {
-				if val, err := strconv.ParseFloat(matches[1], 64); err == nil {
+				if val, err := strconv.ParseFloat(matches[1], 64); err == nil && isValidRoomCount(val) {
 					bedrooms = val
 				}
 			}
@@ -223,7 +376,7 @@ func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bath
 			re := regexp.MustCompile(`"numberOfBathroomsTotal"\s*:\s*(\d+(?:\.\d+)?)`)
 			matches := re.FindStringSubmatch(jsonText)
 			if len(matches) > 1 && bathrooms == 0 {
-				if val, err := strconv.ParseFloat(matches[1], 64); err == nil {
+				if val, err := strconv.ParseFloat(matches[1], 64); err == nil && isValidRoomCount(val) {
 					bathrooms = val
 				}
 			}
