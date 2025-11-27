@@ -243,8 +243,8 @@ func (s *Scheduler) processNextRequest() {
 	log.Printf("Saved %d basic listings to database\n", len(urlToIDMap))
 
 	// Fetch detail pages and enrich listings in parallel using worker pool
-	// Use 4 workers for parallel processing (can be adjusted based on performance)
-	numWorkers := 4
+	// Use 2 workers to keep rate reasonable (10-15 listings per minute max)
+	numWorkers := 2
 	if filteredCount < numWorkers {
 		numWorkers = filteredCount
 	}
@@ -364,7 +364,12 @@ func (s *Scheduler) processNextRequest() {
 		}(w)
 	}
 
-	// Send jobs to workers
+	// Rate limiter: max 15 listings per minute (one every 4 seconds)
+	// This ensures we don't exceed 10-15 listings per minute
+	rateLimiter := time.NewTicker(4 * time.Second)
+	defer rateLimiter.Stop()
+
+	// Send jobs to workers with rate limiting
 	go func() {
 		defer close(jobs)
 		for i, listing := range filteredListings {
@@ -379,6 +384,12 @@ func (s *Scheduler) processNextRequest() {
 				}{i, listing, false, fmt.Errorf("no listing ID found")}
 				continue
 			}
+			
+			// Wait for rate limiter (except for first job)
+			if i > 0 {
+				<-rateLimiter.C
+			}
+			
 			jobs <- struct {
 				index    int
 				listing  models.Listing
