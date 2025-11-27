@@ -23,16 +23,16 @@ type UserConfig struct {
 
 // Request represents a scraping request
 type Request struct {
-	ID                 int
-	UserID             int64
-	TelegramMessageID  int
-	URL                string
-	Status             string // "created", "in_progress", "done", "failed"
-	ListingsCount      int
-	PagesCount         int
-	SheetName          sql.NullString
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
+	ID                int
+	UserID            int64
+	TelegramMessageID int
+	URL               string
+	Status            string // "created", "in_progress", "done", "failed"
+	ListingsCount     int
+	PagesCount        int
+	SheetName         sql.NullString
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // Listing represents a fetched listing stored in database
@@ -48,9 +48,9 @@ type Listing struct {
 	Status           string // "pending", "saved", "failed"
 	IsSuperhost      sql.NullBool
 	IsGuestFavorite  sql.NullBool
-	Bedrooms         sql.NullInt64
-	Bathrooms        sql.NullInt64
-	Beds             sql.NullInt64
+	Bedrooms         sql.NullFloat64
+	Bathrooms        sql.NullFloat64
+	Beds             sql.NullFloat64
 	Description      sql.NullString
 	HouseRules       sql.NullString
 	NewestReviewDate sql.NullTime
@@ -229,7 +229,7 @@ func (db *DB) UpdateListingStatus(listingID int, status string) error {
 // SaveEnrichedListing saves a listing with all detail page fields to the database
 // Returns the listing ID
 func (db *DB) SaveEnrichedListing(requestID int, title, url string, price *float64, currency *string, stars *float64, reviewCount *int,
-	isSuperhost *bool, isGuestFavorite *bool, bedrooms *int, bathrooms *int, beds *int,
+	isSuperhost *bool, isGuestFavorite *bool, bedrooms *float64, bathrooms *float64, beds *float64,
 	description *string, houseRules *string, newestReviewDate *time.Time) (int, error) {
 	var priceVal sql.NullFloat64
 	var currencyVal sql.NullString
@@ -237,9 +237,9 @@ func (db *DB) SaveEnrichedListing(requestID int, title, url string, price *float
 	var reviewCountVal sql.NullInt64
 	var isSuperhostVal sql.NullBool
 	var isGuestFavoriteVal sql.NullBool
-	var bedroomsVal sql.NullInt64
-	var bathroomsVal sql.NullInt64
-	var bedsVal sql.NullInt64
+	var bedroomsVal sql.NullFloat64
+	var bathroomsVal sql.NullFloat64
+	var bedsVal sql.NullFloat64
 	var descriptionVal sql.NullString
 	var houseRulesVal sql.NullString
 	var newestReviewDateVal sql.NullTime
@@ -263,13 +263,13 @@ func (db *DB) SaveEnrichedListing(requestID int, title, url string, price *float
 		isGuestFavoriteVal = sql.NullBool{Bool: *isGuestFavorite, Valid: true}
 	}
 	if bedrooms != nil {
-		bedroomsVal = sql.NullInt64{Int64: int64(*bedrooms), Valid: true}
+		bedroomsVal = sql.NullFloat64{Float64: *bedrooms, Valid: true}
 	}
 	if bathrooms != nil {
-		bathroomsVal = sql.NullInt64{Int64: int64(*bathrooms), Valid: true}
+		bathroomsVal = sql.NullFloat64{Float64: *bathrooms, Valid: true}
 	}
 	if beds != nil {
-		bedsVal = sql.NullInt64{Int64: int64(*beds), Valid: true}
+		bedsVal = sql.NullFloat64{Float64: *beds, Valid: true}
 	}
 	if description != nil {
 		descriptionVal = sql.NullString{String: *description, Valid: true}
@@ -294,7 +294,7 @@ func (db *DB) SaveEnrichedListing(requestID int, title, url string, price *float
 }
 
 // UpdateListingDetails updates an existing listing with detail page information
-func (db *DB) UpdateListingDetails(listingID int, isSuperhost *bool, isGuestFavorite *bool, bedrooms *int, bathrooms *int, beds *int,
+func (db *DB) UpdateListingDetails(listingID int, isSuperhost *bool, isGuestFavorite *bool, bedrooms *float64, bathrooms *float64, beds *float64,
 	description *string, houseRules *string, newestReviewDate *time.Time) error {
 	updates := []string{}
 	args := []interface{}{}
@@ -494,4 +494,3 @@ func (db *DB) UpdateUserConfig(userID int64, maxPages *int, minReviews *int, min
 	_, err := db.conn.Exec(query, args...)
 	return err
 }
-

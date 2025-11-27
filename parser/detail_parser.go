@@ -112,8 +112,10 @@ func (dp *DetailParser) extractGuestFavorite(doc *goquery.Document) bool {
 	return false
 }
 
-// extractRoomCounts extracts bedrooms, bathrooms, and beds count
-func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bathrooms, beds int) {
+// extractRoomCounts extracts bedrooms, bathrooms, and beds count (supports decimal values)
+func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bathrooms, beds float64) {
+	numberPattern := regexp.MustCompile(`(\d+(?:\.\d+)?)`)
+
 	// First, try to find in specific data-testid elements (most reliable)
 	doc.Find("[data-testid*='bedroom'], [data-testid*='bathroom'], [data-testid*='bed'], [data-testid*='room']").Each(func(i int, s *goquery.Selection) {
 		text := strings.TrimSpace(s.Text())
@@ -121,15 +123,14 @@ func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bath
 		testid = strings.ToLower(testid)
 
 		// Extract number from text
-		re := regexp.MustCompile(`(\d+)`)
-		matches := re.FindStringSubmatch(text)
+		matches := numberPattern.FindStringSubmatch(text)
 		if len(matches) > 1 {
-			if val, err := strconv.Atoi(matches[1]); err == nil {
+			if val, err := strconv.ParseFloat(matches[1], 64); err == nil {
 				if strings.Contains(testid, "bedroom") || strings.Contains(testid, "br") {
 					if bedrooms == 0 {
 						bedrooms = val
 					}
-				} else if strings.Contains(testid, "bathroom") || strings.Contains(testid, "ba") {
+				} else if strings.Contains(testid, "bathroom") || strings.Contains(testid, "bath") {
 					if bathrooms == 0 {
 						bathrooms = val
 					}
@@ -148,17 +149,17 @@ func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bath
 	// More comprehensive patterns (case-insensitive)
 	patterns := []struct {
 		re    *regexp.Regexp
-		field *int
+		field *float64
 	}{
 		// Bedrooms patterns
-		{regexp.MustCompile(`(?i)(\d+)\s*(?:bedroom|br|bedrooms)`), &bedrooms},
-		{regexp.MustCompile(`(?i)(\d+)\s*br\b`), &bedrooms},
+		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:bedroom|br|bedrooms)`), &bedrooms},
+		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*br\b`), &bedrooms},
 		// Bathrooms patterns
-		{regexp.MustCompile(`(?i)(\d+)\s*(?:bathroom|ba|bathrooms|bath)`), &bathrooms},
-		{regexp.MustCompile(`(?i)(\d+)\s*ba\b`), &bathrooms},
+		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:bathroom|ba|bathrooms|bath)`), &bathrooms},
+		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*ba\b`), &bathrooms},
 		// Beds patterns - match "bed" or "beds" but not "bedroom" or "bedrooms"
 		// We'll handle this by checking the match doesn't contain "room" after "bed"
-		{regexp.MustCompile(`(?i)(\d+)\s+bed(?:s)?\b`), &beds},
+		{regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s+bed(?:s)?\b`), &beds},
 	}
 
 	for _, p := range patterns {
@@ -182,7 +183,7 @@ func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bath
 						}
 					}
 				}
-				if val, err := strconv.Atoi(matches[1]); err == nil {
+				if val, err := strconv.ParseFloat(matches[1], 64); err == nil {
 					*p.field = val
 				}
 			}
@@ -190,16 +191,16 @@ func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bath
 	}
 
 	// Try to find in summary sections (common Airbnb pattern: "1 bed, 1 bath")
-	summaryPattern := regexp.MustCompile(`(?i)(\d+)\s*(?:bed|br)\s*[,\s]+\s*(\d+)\s*(?:bath|ba)`)
+	summaryPattern := regexp.MustCompile(`(?i)(\d+(?:\.\d+)?)\s*(?:bed|br)\s*[,\s]+\s*(\d+(?:\.\d+)?)\s*(?:bath|ba)`)
 	matches := summaryPattern.FindStringSubmatch(fullText)
 	if len(matches) >= 3 {
 		if beds == 0 {
-			if val, err := strconv.Atoi(matches[1]); err == nil {
+			if val, err := strconv.ParseFloat(matches[1], 64); err == nil {
 				beds = val
 			}
 		}
 		if bathrooms == 0 {
-			if val, err := strconv.Atoi(matches[2]); err == nil {
+			if val, err := strconv.ParseFloat(matches[2], 64); err == nil {
 				bathrooms = val
 			}
 		}
@@ -210,19 +211,19 @@ func (dp *DetailParser) extractRoomCounts(doc *goquery.Document) (bedrooms, bath
 		jsonText := s.Text()
 		// Try to extract from JSON-LD (basic pattern matching)
 		if strings.Contains(jsonText, "numberOfBedrooms") {
-			re := regexp.MustCompile(`"numberOfBedrooms"\s*:\s*(\d+)`)
+			re := regexp.MustCompile(`"numberOfBedrooms"\s*:\s*(\d+(?:\.\d+)?)`)
 			matches := re.FindStringSubmatch(jsonText)
 			if len(matches) > 1 && bedrooms == 0 {
-				if val, err := strconv.Atoi(matches[1]); err == nil {
+				if val, err := strconv.ParseFloat(matches[1], 64); err == nil {
 					bedrooms = val
 				}
 			}
 		}
 		if strings.Contains(jsonText, "numberOfBathroomsTotal") {
-			re := regexp.MustCompile(`"numberOfBathroomsTotal"\s*:\s*(\d+)`)
+			re := regexp.MustCompile(`"numberOfBathroomsTotal"\s*:\s*(\d+(?:\.\d+)?)`)
 			matches := re.FindStringSubmatch(jsonText)
 			if len(matches) > 1 && bathrooms == 0 {
-				if val, err := strconv.Atoi(matches[1]); err == nil {
+				if val, err := strconv.ParseFloat(matches[1], 64); err == nil {
 					bathrooms = val
 				}
 			}
@@ -368,7 +369,7 @@ func (dp *DetailParser) extractReviews(doc *goquery.Document) ([]models.Review, 
 			hasReviewKeyword := strings.Contains(text, "review") || strings.Contains(text, "rating")
 			hasStarOrScore := strings.Contains(text, "star") || strings.Contains(text, "rating") || regexp.MustCompile(`\d+\.?\d*\s*(?:out of|/)\s*5`).MatchString(text)
 			hasDate := regexp.MustCompile(`\w+\s+\d{1,2},?\s+\d{4}|\d{1,2}/\d{1,2}/\d{4}|\d+\s+(?:day|week|month|year)s?\s+ago`).MatchString(text)
-			
+
 			if hasReviewKeyword && (hasStarOrScore || hasDate) {
 				review := dp.extractSingleReview(s)
 				if review != nil && !review.Date.IsZero() {
@@ -497,12 +498,12 @@ func (dp *DetailParser) extractReviewDate(s *goquery.Selection) string {
 	// Try to find date patterns in text (more comprehensive patterns)
 	text := s.Text()
 	datePatterns := []*regexp.Regexp{
-		regexp.MustCompile(`(\w+ \d{1,2}, \d{4})`),                    // "March 15, 2024"
-		regexp.MustCompile(`(\w+\.?\s+\d{1,2}, \d{4})`),              // "Mar. 15, 2024" or "Mar 15, 2024"
-		regexp.MustCompile(`(\d{1,2}/\d{1,2}/\d{4})`),                // "3/15/2024"
-		regexp.MustCompile(`(\d{4}-\d{2}-\d{2})`),                    // "2024-03-15"
-		regexp.MustCompile(`(\d{1,2}\.\d{1,2}\.\d{4})`),              // "15.03.2024"
-		regexp.MustCompile(`(\d{1,2}\s+\w+\s+\d{4})`),                // "15 March 2024"
+		regexp.MustCompile(`(\w+ \d{1,2}, \d{4})`),                                          // "March 15, 2024"
+		regexp.MustCompile(`(\w+\.?\s+\d{1,2}, \d{4})`),                                     // "Mar. 15, 2024" or "Mar 15, 2024"
+		regexp.MustCompile(`(\d{1,2}/\d{1,2}/\d{4})`),                                       // "3/15/2024"
+		regexp.MustCompile(`(\d{4}-\d{2}-\d{2})`),                                           // "2024-03-15"
+		regexp.MustCompile(`(\d{1,2}\.\d{1,2}\.\d{4})`),                                     // "15.03.2024"
+		regexp.MustCompile(`(\d{1,2}\s+\w+\s+\d{4})`),                                       // "15 March 2024"
 		regexp.MustCompile(`(\d+\s+(?:day|days|week|weeks|month|months|year|years)\s+ago)`), // Relative dates
 	}
 
@@ -640,4 +641,3 @@ func (dp *DetailParser) parseDate(dateStr string) (time.Time, error) {
 	// If all formats fail, return error
 	return time.Time{}, fmt.Errorf("unable to parse date: %s", dateStr)
 }
-

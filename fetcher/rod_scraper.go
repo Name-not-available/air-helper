@@ -5,26 +5,32 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
+	rodlauncher "github.com/go-rod/rod/lib/launcher"
 )
 
 // RodFetcher implements the Fetcher interface using rod (headless browser)
 type RodFetcher struct {
-	browser *rod.Browser
+	browser  *rod.Browser
+	launcher *rodlauncher.Launcher
 }
 
 // NewRodFetcher creates a new RodFetcher instance
 func NewRodFetcher() (*RodFetcher, error) {
 	// Get user data directory from environment or use default
-	// This should be mounted as a volume to use disk instead of memory
+	// Prefer mounted memory at /tmp/air-data to offload pressure from RAM
 	userDataDir := os.Getenv("BOT_DATA_DIR")
 	if userDataDir == "" {
-		userDataDir = "/tmp/bnb-data" // Default to /tmp/bnb-data if not set
+		if info, err := os.Stat("/tmp/air-data"); err == nil && info.IsDir() {
+			userDataDir = filepath.Join("/tmp/air-data", "browser-data")
+		} else {
+			userDataDir = filepath.Join(os.TempDir(), "bnb-data")
+		}
 	}
 
 	// Create directory if it doesn't exist
@@ -34,7 +40,7 @@ func NewRodFetcher() (*RodFetcher, error) {
 	}
 
 	// Try to use system Chrome first, fallback to downloading Chromium
-	launcher := launcher.New().
+	rodLauncher := rodlauncher.New().
 		Headless(true).
 		Set("disable-blink-features", "AutomationControlled").
 		NoSandbox(true).
@@ -96,7 +102,7 @@ func NewRodFetcher() (*RodFetcher, error) {
 	if os.Getenv("PATH") != "" {
 		for _, path := range linuxPaths {
 			if _, err := os.Stat(path); err == nil {
-				launcher = launcher.Bin(path)
+				rodLauncher = rodLauncher.Bin(path)
 				break
 			}
 		}
@@ -105,12 +111,12 @@ func NewRodFetcher() (*RodFetcher, error) {
 	// Check Windows paths
 	for _, path := range chromePaths {
 		if _, err := os.Stat(path); err == nil {
-			launcher = launcher.Bin(path)
+			rodLauncher = rodLauncher.Bin(path)
 			break
 		}
 	}
 
-	browserURL, err := launcher.Launch()
+	browserURL, err := rodLauncher.Launch()
 	if err != nil {
 		return nil, fmt.Errorf("failed to launch browser: %w\n\nNote: On Linux, you may need to install Chromium dependencies:\n  apt-get update && apt-get install -y chromium chromium-sandbox || yum install -y chromium", err)
 	}
@@ -121,16 +127,21 @@ func NewRodFetcher() (*RodFetcher, error) {
 	}
 
 	return &RodFetcher{
-		browser: browser,
+		browser:  browser,
+		launcher: rodLauncher,
 	}, nil
 }
 
 // Close closes the browser
 func (rf *RodFetcher) Close() error {
+	var err error
 	if rf.browser != nil {
-		return rf.browser.Close()
+		err = rf.browser.Close()
 	}
-	return nil
+	if rf.launcher != nil {
+		rf.launcher.Kill()
+	}
+	return err
 }
 
 // GetBrowser returns the underlying browser instance
@@ -277,7 +288,7 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 	}
 	htmlPages = append(htmlPages, html)
 	pageCount++
-	
+
 	// Get current URL and extract items_offset for validation
 	currentURLResult, err := page.Eval(`() => window.location.href`)
 	currentURLStr := ""
@@ -295,7 +306,7 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 		// Add delay between page requests (3-5 seconds)
 		// Use 4 seconds as average between 3-5
 		time.Sleep(4 * time.Second)
-		
+
 		// Get current URL before navigation attempt
 		beforeURLResult, err := page.Eval(`() => window.location.href`)
 		beforeURLStr := ""
@@ -320,7 +331,7 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 			}
 			ariaLabel, _ := nextElement.Attribute("aria-label")
 			href, _ := nextElement.Attribute("href")
-			log.Printf("Found next page element - Tag: %s, aria-label: %v, href: %v\n", 
+			log.Printf("Found next page element - Tag: %s, aria-label: %v, href: %v\n",
 				tagName, ariaLabel, href)
 		}
 		log.Printf("Next page URL: %s\n", nextURL)
@@ -361,7 +372,7 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 		log.Printf("New items_offset: %d (previous: %d)\n", newOffset, currentOffset)
 
 		if newOffset <= currentOffset && newOffset >= 0 {
-			log.Printf("Warning: items_offset did not increase (was %d, now %d). Page may not have advanced.\n", 
+			log.Printf("Warning: items_offset did not increase (was %d, now %d). Page may not have advanced.\n",
 				currentOffset, newOffset)
 			// Check HTML content as fallback validation
 			html, err := page.HTML()
@@ -391,7 +402,7 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 		if len(htmlPages) > 0 {
 			// Compare with last page - if HTML is identical, it's a duplicate
 			if html == htmlPages[len(htmlPages)-1] {
-				log.Printf("Warning: Page %d HTML is identical to previous page (offset: %d), skipping duplicate\n", 
+				log.Printf("Warning: Page %d HTML is identical to previous page (offset: %d), skipping duplicate\n",
 					pageCount+1, newOffset)
 				isDuplicate = true
 			}
@@ -400,7 +411,7 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 		if !isDuplicate {
 			htmlPages = append(htmlPages, html)
 			pageCount++
-			log.Printf("Fetched page %d/%d (HTML size: %d bytes, offset: %d)\n", 
+			log.Printf("Fetched page %d/%d (HTML size: %d bytes, offset: %d)\n",
 				pageCount, maxPages, len(html), newOffset)
 		} else {
 			// If we got a duplicate, stop pagination

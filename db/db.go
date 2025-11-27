@@ -130,9 +130,9 @@ func (db *DB) initSchema() error {
 			status VARCHAR(20) NOT NULL DEFAULT 'pending',
 			is_superhost BOOLEAN,
 			is_guest_favorite BOOLEAN,
-			bedrooms INTEGER,
-			bathrooms INTEGER,
-			beds INTEGER,
+			bedrooms DOUBLE PRECISION,
+			bathrooms DOUBLE PRECISION,
+			beds DOUBLE PRECISION,
 			description TEXT,
 			house_rules TEXT,
 			newest_review_date TIMESTAMP,
@@ -194,4 +194,3 @@ func (db *DB) initSchema() error {
 func (db *DB) GetConn() *sql.DB {
 	return db.conn
 }
-

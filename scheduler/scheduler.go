@@ -4,6 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
+	"runtime"
+	"runtime/debug"
+	"strings"
 	"time"
 
 	"bnb-fetcher/config"
@@ -68,6 +72,18 @@ func (s *Scheduler) run() {
 	}
 }
 
+func formatRoomCount(value float64) string {
+	if value <= 0 {
+		return "-"
+	}
+	if math.Abs(value-math.Round(value)) < 0.001 {
+		return fmt.Sprintf("%.0f", value)
+	}
+	formatted := fmt.Sprintf("%.2f", value)
+	formatted = strings.TrimRight(formatted, "0")
+	return strings.TrimRight(formatted, ".")
+}
+
 // processNextRequest processes the next request with status 'created'
 func (s *Scheduler) processNextRequest() {
 	req, err := s.db.GetNextCreatedRequest()
@@ -80,6 +96,8 @@ func (s *Scheduler) processNextRequest() {
 		// No requests to process
 		return
 	}
+
+	defer releaseMemory()
 
 	log.Printf("Processing request ID %d for user %d\n", req.ID, req.UserID)
 
@@ -135,6 +153,7 @@ func (s *Scheduler) processNextRequest() {
 		s.handleRequestError(req, err)
 		return
 	}
+	pagesFetched := len(htmlPages)
 
 	if len(htmlPages) == 0 {
 		err := fmt.Errorf("no HTML pages were collected")
@@ -160,9 +179,12 @@ func (s *Scheduler) processNextRequest() {
 			listings[j].PageNumber = pageNumber
 		}
 		allListings = append(allListings, listings...)
+		htmlPages[i] = "" // release HTML string promptly
 	}
-	
-	log.Printf("Total listings parsed from all pages: %d\n", len(allListings))
+	htmlPages = nil
+
+	totalListings := len(allListings)
+	log.Printf("Total listings parsed from all pages: %d\n", totalListings)
 
 	if len(allListings) == 0 {
 		err := fmt.Errorf("no listings found in the fetched HTML")
@@ -174,11 +196,13 @@ func (s *Scheduler) processNextRequest() {
 	// Apply filters
 	filterInstance := filter.NewFilter(cfg)
 	filteredListings := filterInstance.ApplyFilters(allListings)
+	allListings = nil
+	filteredCount := len(filteredListings)
 
 	// Save basic listings to database first (with status 'pending')
 	// Store URL -> listingID mapping for later updates
 	urlToIDMap := make(map[string]int)
-	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("💾 Saving %d listings to database...", len(filteredListings)))
+	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("💾 Saving %d listings to database...", filteredCount))
 
 	for _, listing := range filteredListings {
 		var price *float64
@@ -221,7 +245,7 @@ func (s *Scheduler) processNextRequest() {
 	detailFetcher := fetcher.NewDetailFetcher(rodFetcher.GetBrowser())
 	detailParser := parser.NewDetailParser()
 
-	enrichedListings := make([]models.Listing, 0, len(filteredListings))
+	enrichedListings := make([]models.Listing, 0, filteredCount)
 	successCount := 0
 	failCount := 0
 
@@ -234,14 +258,14 @@ func (s *Scheduler) processNextRequest() {
 		}
 
 		// Send status update
-		s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("📄 Fetching details for listing %d/%d...", i+1, len(filteredListings)))
-		log.Printf("Fetching detail page for listing %d/%d: %s\n", i+1, len(filteredListings), listing.URL)
+		s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("📄 Fetching details for listing %d/%d...", i+1, filteredCount))
+		log.Printf("Fetching detail page for listing %d/%d: %s\n", i+1, filteredCount, listing.URL)
 
 		// Fetch detail page
 		detailHTML, err := detailFetcher.FetchDetailPage(listing.URL)
 		if err != nil {
 			log.Printf("Warning: Failed to fetch detail page for %s: %v\n", listing.URL, err)
-			s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("⚠️ Failed to fetch details for listing %d/%d", i+1, len(filteredListings)))
+			s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("⚠️ Failed to fetch details for listing %d/%d", i+1, filteredCount))
 			failCount++
 			// Update status to failed
 			s.db.UpdateListingStatus(listingID, "failed")
@@ -250,9 +274,10 @@ func (s *Scheduler) processNextRequest() {
 
 		// Parse detail page
 		detailData, err := detailParser.ParseDetailPage(detailHTML)
+		detailHTML = ""
 		if err != nil {
 			log.Printf("Warning: Failed to parse detail page for %s: %v\n", listing.URL, err)
-			s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("⚠️ Failed to parse details for listing %d/%d", i+1, len(filteredListings)))
+			s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("⚠️ Failed to parse details for listing %d/%d", i+1, filteredCount))
 			failCount++
 			continue
 		}
@@ -271,9 +296,9 @@ func (s *Scheduler) processNextRequest() {
 		// Update listing in database immediately
 		var isSuperhost *bool
 		var isGuestFavorite *bool
-		var bedrooms *int
-		var bathrooms *int
-		var beds *int
+		var bedrooms *float64
+		var bathrooms *float64
+		var beds *float64
 		var description *string
 		var houseRules *string
 		var newestReviewDate *time.Time
@@ -315,23 +340,28 @@ func (s *Scheduler) processNextRequest() {
 		} else {
 			log.Printf("No reviews found for listing %d\n", listingID)
 		}
+		// release review text copies after persisting
+		listing.Reviews = nil
 
 		enrichedListings = append(enrichedListings, listing)
 		successCount++
 
 		// Send success status
-		s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("✅ Processed listing %d/%d (Bedrooms: %d, Bathrooms: %d, Reviews: %d)", i+1, len(filteredListings), listing.Bedrooms, listing.Bathrooms, len(listing.Reviews)))
+		s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("✅ Processed listing %d/%d (Bedrooms: %s, Bathrooms: %s, Reviews: %d)", i+1, filteredCount, formatRoomCount(listing.Bedrooms), formatRoomCount(listing.Bathrooms), len(listing.Reviews)))
 
 		// Add delay between detail page fetches
-		if i < len(filteredListings)-1 {
+		if i < filteredCount-1 {
 			time.Sleep(3 * time.Second)
 		}
 	}
 
+	urlToIDMap = nil
+
 	log.Printf("Detail parsing complete: %d successful, %d failed\n", successCount, failCount)
+	filteredListings = nil
 
 	// Update request counts
-	if err := s.db.UpdateRequestCounts(req.ID, len(filteredListings), len(htmlPages)); err != nil {
+	if err := s.db.UpdateRequestCounts(req.ID, filteredCount, pagesFetched); err != nil {
 		log.Printf("Error updating request counts: %v\n", err)
 	}
 
@@ -349,6 +379,7 @@ func (s *Scheduler) processNextRequest() {
 		s.handleRequestError(req, err)
 		return
 	}
+	enrichedListings = nil
 
 	// Update request with sheet name
 	if err := s.db.UpdateRequestSheetName(req.ID, createdSheetName); err != nil {
@@ -370,7 +401,7 @@ func (s *Scheduler) processNextRequest() {
 			"Found %d listings before filtering.\n"+
 			"Pages: %d fetched (requested: %d)\n\n"+
 			"View spreadsheet: %s",
-		len(filteredListings), len(allListings), len(htmlPages), userConfig.MaxPages, sheetURL)
+		filteredCount, totalListings, pagesFetched, userConfig.MaxPages, sheetURL)
 	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, successMsg)
 }
 
@@ -382,6 +413,11 @@ func (s *Scheduler) handleRequestError(req *db.Request, err error) {
 
 	errorMsg := fmt.Sprintf("❌ Error processing request: %v", err)
 	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, errorMsg)
+}
+
+func releaseMemory() {
+	runtime.GC()
+	debug.FreeOSMemory()
 }
 
 // fetchWithUpdates fetches pages and sends status updates
