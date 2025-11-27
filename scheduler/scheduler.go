@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"time"
 
 	"bnb-fetcher/config"
@@ -241,119 +242,187 @@ func (s *Scheduler) processNextRequest() {
 
 	log.Printf("Saved %d basic listings to database\n", len(urlToIDMap))
 
-	// Fetch detail pages and enrich listings incrementally
+	// Fetch detail pages and enrich listings in parallel using worker pool
+	// Use 4 workers for parallel processing (can be adjusted based on performance)
+	numWorkers := 4
+	if filteredCount < numWorkers {
+		numWorkers = filteredCount
+	}
+
 	detailFetcher := fetcher.NewDetailFetcher(rodFetcher.GetBrowser())
 	detailParser := parser.NewDetailParser()
 
-	enrichedListings := make([]models.Listing, 0, filteredCount)
+	// Create channels for work distribution
+	jobs := make(chan struct {
+		index    int
+		listing  models.Listing
+		listingID int
+	}, filteredCount)
+	results := make(chan struct {
+		index    int
+		listing  models.Listing
+		success  bool
+		err      error
+	}, filteredCount)
+
+	// Create worker pool
+	var wg sync.WaitGroup
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for job := range jobs {
+				// Fetch detail page
+				detailHTML, err := detailFetcher.FetchDetailPage(job.listing.URL)
+				if err != nil {
+					log.Printf("Worker %d: Failed to fetch detail page for %s: %v\n", workerID, job.listing.URL, err)
+					results <- struct {
+						index    int
+						listing  models.Listing
+						success  bool
+						err      error
+					}{job.index, job.listing, false, err}
+					s.db.UpdateListingStatus(job.listingID, "failed")
+					continue
+				}
+
+				// Parse detail page
+				detailData, err := detailParser.ParseDetailPage(detailHTML)
+				detailHTML = "" // Release memory immediately
+				if err != nil {
+					log.Printf("Worker %d: Failed to parse detail page for %s: %v\n", workerID, job.listing.URL, err)
+					results <- struct {
+						index    int
+						listing  models.Listing
+						success  bool
+						err      error
+					}{job.index, job.listing, false, err}
+					continue
+				}
+
+				// Merge detail data with listing data
+				job.listing.IsSuperhost = detailData.IsSuperhost
+				job.listing.IsGuestFavorite = detailData.IsGuestFavorite
+				job.listing.Bedrooms = detailData.Bedrooms
+				job.listing.Bathrooms = detailData.Bathrooms
+				job.listing.Beds = detailData.Beds
+				job.listing.Description = detailData.Description
+				job.listing.HouseRules = detailData.HouseRules
+				job.listing.NewestReviewDate = detailData.NewestReviewDate
+				job.listing.Reviews = detailData.Reviews
+
+				// Update listing in database
+				var isSuperhost *bool
+				var isGuestFavorite *bool
+				var bedrooms *float64
+				var bathrooms *float64
+				var beds *float64
+				var description *string
+				var houseRules *string
+				var newestReviewDate *time.Time
+
+				if job.listing.Bedrooms > 0 {
+					bedrooms = &job.listing.Bedrooms
+				}
+				if job.listing.Bathrooms > 0 {
+					bathrooms = &job.listing.Bathrooms
+				}
+				if job.listing.Beds > 0 {
+					beds = &job.listing.Beds
+				}
+				isSuperhost = &job.listing.IsSuperhost
+				isGuestFavorite = &job.listing.IsGuestFavorite
+				if job.listing.Description != "" {
+					description = &job.listing.Description
+				}
+				if job.listing.HouseRules != "" {
+					houseRules = &job.listing.HouseRules
+				}
+				newestReviewDate = job.listing.NewestReviewDate
+
+				err = s.db.UpdateListingDetails(job.listingID, isSuperhost, isGuestFavorite, bedrooms, bathrooms, beds, description, houseRules, newestReviewDate)
+				if err != nil {
+					log.Printf("Worker %d: Failed to update listing details for listing %d: %v\n", workerID, job.listingID, err)
+				}
+
+				// Save reviews
+				if len(job.listing.Reviews) > 0 {
+					if err := s.db.SaveReviews(job.listingID, job.listing.Reviews); err != nil {
+						log.Printf("Worker %d: Failed to save reviews for listing %d: %v\n", workerID, job.listingID, err)
+					}
+				}
+				// Release review memory
+				job.listing.Reviews = nil
+
+				results <- struct {
+					index    int
+					listing  models.Listing
+					success  bool
+					err      error
+				}{job.index, job.listing, true, nil}
+			}
+		}(w)
+	}
+
+	// Send jobs to workers
+	go func() {
+		defer close(jobs)
+		for i, listing := range filteredListings {
+			listingID, exists := urlToIDMap[listing.URL]
+			if !exists {
+				log.Printf("Warning: No listing ID found for URL: %s\n", listing.URL)
+				results <- struct {
+					index    int
+					listing  models.Listing
+					success  bool
+					err      error
+				}{i, listing, false, fmt.Errorf("no listing ID found")}
+				continue
+			}
+			jobs <- struct {
+				index    int
+				listing  models.Listing
+				listingID int
+			}{i, listing, listingID}
+		}
+	}()
+
+	// Close results channel when all workers are done
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	// Collect results and maintain order
+	enrichedListings := make([]models.Listing, filteredCount)
 	successCount := 0
 	failCount := 0
+	processedCount := 0
 
-	for i, listing := range filteredListings {
-		listingID, exists := urlToIDMap[listing.URL]
-		if !exists {
-			log.Printf("Warning: No listing ID found for URL: %s\n", listing.URL)
-			failCount++
-			continue
-		}
-
-		// Send status update
-		s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("📄 Fetching details for listing %d/%d...", i+1, filteredCount))
-		log.Printf("Fetching detail page for listing %d/%d: %s\n", i+1, filteredCount, listing.URL)
-
-		// Fetch detail page
-		detailHTML, err := detailFetcher.FetchDetailPage(listing.URL)
-		if err != nil {
-			log.Printf("Warning: Failed to fetch detail page for %s: %v\n", listing.URL, err)
-			s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("⚠️ Failed to fetch details for listing %d/%d", i+1, filteredCount))
-			failCount++
-			// Update status to failed
-			s.db.UpdateListingStatus(listingID, "failed")
-			continue
-		}
-
-		// Parse detail page
-		detailData, err := detailParser.ParseDetailPage(detailHTML)
-		detailHTML = ""
-		if err != nil {
-			log.Printf("Warning: Failed to parse detail page for %s: %v\n", listing.URL, err)
-			s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("⚠️ Failed to parse details for listing %d/%d", i+1, filteredCount))
-			failCount++
-			continue
-		}
-
-		// Merge detail data with listing data
-		listing.IsSuperhost = detailData.IsSuperhost
-		listing.IsGuestFavorite = detailData.IsGuestFavorite
-		listing.Bedrooms = detailData.Bedrooms
-		listing.Bathrooms = detailData.Bathrooms
-		listing.Beds = detailData.Beds
-		listing.Description = detailData.Description
-		listing.HouseRules = detailData.HouseRules
-		listing.NewestReviewDate = detailData.NewestReviewDate
-		listing.Reviews = detailData.Reviews
-
-		// Update listing in database immediately
-		var isSuperhost *bool
-		var isGuestFavorite *bool
-		var bedrooms *float64
-		var bathrooms *float64
-		var beds *float64
-		var description *string
-		var houseRules *string
-		var newestReviewDate *time.Time
-
-		if listing.Bedrooms > 0 {
-			bedrooms = &listing.Bedrooms
-		}
-		if listing.Bathrooms > 0 {
-			bathrooms = &listing.Bathrooms
-		}
-		if listing.Beds > 0 {
-			beds = &listing.Beds
-		}
-		isSuperhost = &listing.IsSuperhost
-		isGuestFavorite = &listing.IsGuestFavorite
-		if listing.Description != "" {
-			description = &listing.Description
-		}
-		if listing.HouseRules != "" {
-			houseRules = &listing.HouseRules
-		}
-		newestReviewDate = listing.NewestReviewDate
-
-		err = s.db.UpdateListingDetails(listingID, isSuperhost, isGuestFavorite, bedrooms, bathrooms, beds, description, houseRules, newestReviewDate)
-		if err != nil {
-			log.Printf("Warning: Failed to update listing details for listing %d: %v\n", listingID, err)
-		} else {
-			log.Printf("Updated listing %d with detail information\n", listingID)
-		}
-
-		// Save reviews immediately
-		if len(listing.Reviews) > 0 {
-			log.Printf("Saving %d reviews for listing %d\n", len(listing.Reviews), listingID)
-			if err := s.db.SaveReviews(listingID, listing.Reviews); err != nil {
-				log.Printf("Error: Failed to save %d reviews for listing %d: %v\n", len(listing.Reviews), listingID, err)
-			} else {
-				log.Printf("Successfully saved %d reviews for listing %d\n", len(listing.Reviews), listingID)
+	// Process results as they come in
+	for result := range results {
+		processedCount++
+		if result.success {
+			enrichedListings[result.index] = result.listing
+			successCount++
+			// Send status update every 5 listings or on completion
+			if processedCount%5 == 0 || processedCount == filteredCount {
+				s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("📄 Processed %d/%d listings...", processedCount, filteredCount))
 			}
 		} else {
-			log.Printf("No reviews found for listing %d\n", listingID)
-		}
-		// release review text copies after persisting
-		listing.Reviews = nil
-
-		enrichedListings = append(enrichedListings, listing)
-		successCount++
-
-		// Send success status
-		s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("✅ Processed listing %d/%d (Bedrooms: %s, Bathrooms: %s, Reviews: %d)", i+1, filteredCount, formatRoomCount(listing.Bedrooms), formatRoomCount(listing.Bathrooms), len(listing.Reviews)))
-
-		// Add delay between detail page fetches
-		if i < filteredCount-1 {
-			time.Sleep(3 * time.Second)
+			failCount++
+			log.Printf("Failed to process listing %d: %v\n", result.index+1, result.err)
 		}
 	}
+
+	// Filter out empty listings (failed ones)
+	finalListings := make([]models.Listing, 0, successCount)
+	for _, listing := range enrichedListings {
+		if listing.URL != "" {
+			finalListings = append(finalListings, listing)
+		}
+	}
+	enrichedListings = finalListings
 
 	urlToIDMap = nil
 

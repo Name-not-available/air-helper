@@ -49,15 +49,18 @@ func (df *DetailFetcher) FetchDetailPage(url string) (string, error) {
 
 	// Wait for page to load
 	page.WaitLoad()
-	time.Sleep(3 * time.Second) // Give JavaScript time to render
 
-	// Wait for page to stabilize
-	if err := page.Timeout(10 * time.Second).WaitStable(500 * time.Millisecond); err != nil {
+	// Reduced wait time - WaitStable already handles most of the rendering
+	// Only wait 1 second for initial JS execution
+	time.Sleep(1 * time.Second)
+
+	// Wait for page to stabilize (this is more efficient than fixed sleeps)
+	// Reduced timeout from 10s to 5s and stability check from 500ms to 300ms
+	if err := page.Timeout(5 * time.Second).WaitStable(300 * time.Millisecond); err != nil {
 		log.Printf("Warning: Detail page did not stabilize within timeout, continuing anyway: %v\n", err)
+		// If WaitStable fails, give a minimal fallback wait
+		time.Sleep(500 * time.Millisecond)
 	}
-
-	// Additional wait to ensure content is rendered
-	time.Sleep(2 * time.Second)
 
 	// Get HTML content
 	html, err := page.HTML()
@@ -67,4 +70,3 @@ func (df *DetailFetcher) FetchDetailPage(url string) (string, error) {
 
 	return html, nil
 }
-
