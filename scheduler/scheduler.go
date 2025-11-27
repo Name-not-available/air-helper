@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -30,6 +31,8 @@ type Scheduler struct {
 	spreadsheetURL string
 	ctx            context.Context
 	cancel         context.CancelFunc
+	activeRequests int
+	requestsMutex  sync.Mutex
 }
 
 // NewScheduler creates a new scheduler (browser will be created on-demand)
@@ -85,6 +88,48 @@ func formatRoomCount(value float64) string {
 	return strings.TrimRight(formatted, ".")
 }
 
+// incrementActiveRequest increments the active request counter
+func (s *Scheduler) incrementActiveRequest() {
+	s.requestsMutex.Lock()
+	s.activeRequests++
+	activeCount := s.activeRequests
+	s.requestsMutex.Unlock()
+	log.Printf("Active requests: %d\n", activeCount)
+}
+
+// decrementActiveRequest decrements the active request counter and checks if restart is needed
+func (s *Scheduler) decrementActiveRequest() {
+	s.requestsMutex.Lock()
+	s.activeRequests--
+	activeCount := s.activeRequests
+	s.requestsMutex.Unlock()
+	log.Printf("Active requests: %d\n", activeCount)
+
+	// If no active requests, trigger restart after a short delay to ensure cleanup
+	if activeCount == 0 {
+		log.Println("No active requests remaining. Scheduling restart in 2 seconds...")
+		go func() {
+			time.Sleep(2 * time.Second)
+			// Double-check no new requests started
+			s.requestsMutex.Lock()
+			stillZero := s.activeRequests == 0
+			s.requestsMutex.Unlock()
+			if stillZero {
+				s.requestRestart()
+			}
+		}()
+	}
+}
+
+// requestRestart exits the process to allow process manager to restart it
+func (s *Scheduler) requestRestart() {
+	log.Println("🔄 Restarting service to clean up memory...")
+	log.Println("Process will exit and be restarted by process manager")
+	// Give a moment for logs to flush
+	time.Sleep(500 * time.Millisecond)
+	os.Exit(0)
+}
+
 // processNextRequest processes the next request with status 'created'
 func (s *Scheduler) processNextRequest() {
 	req, err := s.db.GetNextCreatedRequest()
@@ -98,6 +143,9 @@ func (s *Scheduler) processNextRequest() {
 		return
 	}
 
+	// Increment active request counter
+	s.incrementActiveRequest()
+	defer s.decrementActiveRequest()
 	defer releaseMemory()
 
 	log.Printf("Processing request ID %d for user %d\n", req.ID, req.UserID)
@@ -145,10 +193,9 @@ func (s *Scheduler) processNextRequest() {
 
 	fetcherInstance := fetcher.Fetcher(rodFetcher)
 
-	// Fetch pages with status updates
-	// We'll fetch page by page and send updates
+	// Fetch pages
 	log.Printf("Using maxPages from user config: %d\n", userConfig.MaxPages)
-	htmlPages, err := s.fetchWithUpdates(fetcherInstance, req.URL, userConfig.MaxPages, req.TelegramMessageID, req.UserID)
+	htmlPages, err := fetcherInstance.Fetch(req.URL, userConfig.MaxPages)
 	if err != nil {
 		log.Printf("Error scraping: %v\n", err)
 		s.handleRequestError(req, err)
@@ -163,11 +210,15 @@ func (s *Scheduler) processNextRequest() {
 		return
 	}
 
-	// Parse listings
+	// Parse listings and send status updates as pages are parsed
 	parserInstance := parser.NewParser()
 	var allListings []models.Listing
 
 	for i, html := range htmlPages {
+		// Send status update as we start parsing each page
+		s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("📄 Parsing page %d/%d...", i+1, pagesFetched))
+		
+		log.Printf("Parsing page %d/%d\n", i+1, pagesFetched)
 		listings, err := parserInstance.ParseHTML(html)
 		if err != nil {
 			log.Printf("Warning: Failed to parse page %d: %v\n", i+1, err)
@@ -197,8 +248,21 @@ func (s *Scheduler) processNextRequest() {
 	// Apply filters
 	filterInstance := filter.NewFilter(cfg)
 	filteredListings := filterInstance.ApplyFilters(allListings)
-	allListings = nil
 	filteredCount := len(filteredListings)
+	
+	// Create a map of filtered listing URLs for quick lookup
+	filteredURLs := make(map[string]bool, filteredCount)
+	for _, listing := range filteredListings {
+		filteredURLs[listing.URL] = true
+	}
+	
+	// Keep unfiltered listings for spreadsheet (they'll be added at the bottom)
+	unfilteredListings := make([]models.Listing, 0, len(allListings)-filteredCount)
+	for _, listing := range allListings {
+		if !filteredURLs[listing.URL] {
+			unfilteredListings = append(unfilteredListings, listing)
+		}
+	}
 
 	// Save basic listings to database first (with status 'pending')
 	// Store URL -> listingID mapping for later updates
@@ -234,7 +298,7 @@ func (s *Scheduler) processNextRequest() {
 		// Get the listing ID we just created
 		listingID, err := s.db.GetListingIDByURL(req.ID, listing.URL)
 		if err != nil {
-			log.Printf("Warning: Failed to get listing ID for URL %s: %v\n", listing.URL, err)
+			log.Printf("Warning: Failed to get listing ID for URL %s: %v\n", extractURLPath(listing.URL), err)
 			continue
 		}
 		urlToIDMap[listing.URL] = listingID
@@ -275,7 +339,7 @@ func (s *Scheduler) processNextRequest() {
 				// Fetch detail page
 				detailHTML, err := detailFetcher.FetchDetailPage(job.listing.URL)
 				if err != nil {
-					log.Printf("Worker %d: Failed to fetch detail page for %s: %v\n", workerID, job.listing.URL, err)
+					log.Printf("Worker %d: Failed to fetch detail page for %s: %v\n", workerID, extractURLPath(job.listing.URL), err)
 					results <- struct {
 						index    int
 						listing  models.Listing
@@ -290,7 +354,7 @@ func (s *Scheduler) processNextRequest() {
 				detailData, err := detailParser.ParseDetailPage(detailHTML)
 				detailHTML = "" // Release memory immediately
 				if err != nil {
-					log.Printf("Worker %d: Failed to parse detail page for %s: %v\n", workerID, job.listing.URL, err)
+					log.Printf("Worker %d: Failed to parse detail page for %s: %v\n", workerID, extractURLPath(job.listing.URL), err)
 					results <- struct {
 						index    int
 						listing  models.Listing
@@ -375,7 +439,7 @@ func (s *Scheduler) processNextRequest() {
 		for i, listing := range filteredListings {
 			listingID, exists := urlToIDMap[listing.URL]
 			if !exists {
-				log.Printf("Warning: No listing ID found for URL: %s\n", listing.URL)
+				log.Printf("Warning: No listing ID found for URL: %s\n", extractURLPath(listing.URL))
 				results <- struct {
 					index    int
 					listing  models.Listing
@@ -439,6 +503,7 @@ func (s *Scheduler) processNextRequest() {
 
 	log.Printf("Detail parsing complete: %d successful, %d failed\n", successCount, failCount)
 	filteredListings = nil
+	allListings = nil // Now we can release allListings
 
 	// Update request counts
 	if err := s.db.UpdateRequestCounts(req.ID, filteredCount, pagesFetched); err != nil {
@@ -453,7 +518,8 @@ func (s *Scheduler) processNextRequest() {
 		cfg.Filters.MinReviews, cfg.Filters.MinPrice, cfg.Filters.MaxPrice, cfg.Filters.MinStars)
 
 	// Write to Google Sheets (sheet will be inserted at the beginning)
-	createdSheetName, sheetID, err := s.writer.CreateSheetAndWriteListings(sheetName, enrichedListings, req.URL, filterInfo)
+	// Include filtered listings at the bottom
+	createdSheetName, sheetID, err := s.writer.CreateSheetAndWriteListings(sheetName, enrichedListings, unfilteredListings, req.URL, filterInfo)
 	if err != nil {
 		log.Printf("Error writing to Google Sheets: %v\n", err)
 		s.handleRequestError(req, err)
@@ -500,22 +566,6 @@ func releaseMemory() {
 	debug.FreeOSMemory()
 }
 
-// fetchWithUpdates fetches pages and sends status updates
-func (s *Scheduler) fetchWithUpdates(fetcherInstance fetcher.Fetcher, url string, maxPages int, messageID int, userID int64) ([]string, error) {
-	// For now, use the standard fetcher and send updates based on results
-	// In a more advanced version, we could modify the fetcher to accept callbacks
-	htmlPages, err := fetcherInstance.Fetch(url, maxPages)
-	if err != nil {
-		return nil, err
-	}
-
-	// Send status updates for each page
-	for i := range htmlPages {
-		s.sendStatusUpdate(messageID, userID, fmt.Sprintf("📄 Page %d/%d fetched", i+1, len(htmlPages)))
-	}
-
-	return htmlPages, nil
-}
 
 // createSheetURL creates a URL that opens a specific sheet in the spreadsheet
 func (s *Scheduler) createSheetURL(sheetID int64) string {
@@ -529,6 +579,25 @@ func (s *Scheduler) createSheetURL(sheetID int64) string {
 	// Create URL with gid parameter to open specific sheet
 	// Format: https://docs.google.com/spreadsheets/d/SPREADSHEET_ID/edit#gid=SHEET_ID
 	return fmt.Sprintf("https://docs.google.com/spreadsheets/d/%s/edit#gid=%d", spreadsheetID, sheetID)
+}
+
+// extractURLPath extracts the path from a URL, removing the domain
+func extractURLPath(urlStr string) string {
+	if urlStr == "" {
+		return ""
+	}
+	// Try to parse as URL
+	if idx := strings.Index(urlStr, "://"); idx >= 0 {
+		if pathIdx := strings.Index(urlStr[idx+3:], "/"); pathIdx >= 0 {
+			return urlStr[idx+3+pathIdx:]
+		}
+		return "/"
+	}
+	// If no protocol, assume it's already a path
+	if strings.HasPrefix(urlStr, "/") {
+		return urlStr
+	}
+	return urlStr
 }
 
 // sendStatusUpdate sends a status update message to Telegram

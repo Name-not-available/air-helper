@@ -14,6 +14,25 @@ import (
 	rodlauncher "github.com/go-rod/rod/lib/launcher"
 )
 
+// extractURLPath extracts the path from a URL, removing the domain
+func extractURLPath(urlStr string) string {
+	if urlStr == "" {
+		return ""
+	}
+	// Try to parse as URL
+	if idx := strings.Index(urlStr, "://"); idx >= 0 {
+		if pathIdx := strings.Index(urlStr[idx+3:], "/"); pathIdx >= 0 {
+			return urlStr[idx+3+pathIdx:]
+		}
+		return "/"
+	}
+	// If no protocol, assume it's already a path
+	if strings.HasPrefix(urlStr, "/") {
+		return urlStr
+	}
+	return urlStr
+}
+
 // RodFetcher implements the Fetcher interface using rod (headless browser)
 type RodFetcher struct {
 	browser  *rod.Browser
@@ -295,7 +314,7 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 	if err == nil && currentURLResult != nil {
 		currentURLStr = currentURLResult.Value.Str()
 	}
-	log.Printf("Fetched page %d/%d (URL: %s)\n", pageCount, maxPages, currentURLStr)
+	log.Printf("Fetched page %d/%d (URL: %s)\n", pageCount, maxPages, extractURLPath(currentURLStr))
 
 	// Extract items_offset from current URL for validation
 	currentOffset := rf.extractItemsOffset(currentURLStr)
@@ -313,7 +332,7 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 		if err == nil && beforeURLResult != nil {
 			beforeURLStr = beforeURLResult.Value.Str()
 		}
-		log.Printf("Before pagination attempt - Current URL: %s\n", beforeURLStr)
+		log.Printf("Before pagination attempt - Current URL: %s\n", extractURLPath(beforeURLStr))
 
 		// Find next page link within pagination nav
 		nextURL, nextElement, err := rf.findNextPageLink(page)
@@ -334,7 +353,7 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 			log.Printf("Found next page element - Tag: %s, aria-label: %v, href: %v\n",
 				tagName, ariaLabel, href)
 		}
-		log.Printf("Next page URL: %s\n", nextURL)
+		log.Printf("Next page URL: %s\n", extractURLPath(nextURL))
 
 		// Normalize URL (handle relative URLs)
 		if strings.HasPrefix(nextURL, "/") {
@@ -365,7 +384,7 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 		if err == nil && afterURLResult != nil {
 			afterURLStr = afterURLResult.Value.Str()
 		}
-		log.Printf("After navigation - Current URL: %s\n", afterURLStr)
+		log.Printf("After navigation - Current URL: %s\n", extractURLPath(afterURLStr))
 
 		// Validate that we actually moved to a new page by checking items_offset
 		newOffset := rf.extractItemsOffset(afterURLStr)

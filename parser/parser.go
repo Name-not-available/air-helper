@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"log"
 	"regexp"
 	"strconv"
 	"strings"
@@ -21,6 +22,7 @@ func NewParser() *Parser {
 
 // ParseHTML extracts listings from HTML content
 func (p *Parser) ParseHTML(htmlContent string) ([]models.Listing, error) {
+	log.Printf("Parsing HTML content (size: %d bytes)\n", len(htmlContent))
 	doc, err := goquery.NewDocumentFromReader(strings.NewReader(htmlContent))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse HTML: %w", err)
@@ -63,6 +65,7 @@ func (p *Parser) ParseHTML(htmlContent string) ([]models.Listing, error) {
 		})
 	}
 
+	log.Printf("Parsed HTML: found %d listings\n", len(listings))
 	return listings, nil
 }
 

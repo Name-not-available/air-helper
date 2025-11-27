@@ -213,8 +213,9 @@ func (w *Writer) AppendListings(listings []models.Listing) error {
 // CreateSheetAndWriteListings creates a new sheet and writes listings to it
 // The sheet is inserted at the beginning (index 0) of the spreadsheet
 // url and filterInfo are optional - if provided, they will be added as metadata in the first row
+// unfilteredListings will be added at the bottom of the sheet after filtered listings
 // Returns the sheet name and sheet ID (gid) that was created
-func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models.Listing, url string, filterInfo string) (string, int64, error) {
+func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models.Listing, unfilteredListings []models.Listing, url string, filterInfo string) (string, int64, error) {
 	// Sanitize sheet name (Google Sheets has restrictions)
 	sheetName = sanitizeSheetName(sheetName)
 	if len(sheetName) > 100 {

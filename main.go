@@ -91,7 +91,8 @@ func runCLIMode(urlStr, configPath string, maxPages int, spreadsheetURL, credent
 	sheetName := fmt.Sprintf("CLI_%s", time.Now().Format("20060102_150405"))
 	
 	// Use CreateSheetAndWriteListings to insert at the beginning
-	_, _, err = writer.CreateSheetAndWriteListings(sheetName, filteredListings, urlStr, filterInfo)
+	// CLI mode doesn't have unfiltered listings, so pass empty slice
+	_, _, err = writer.CreateSheetAndWriteListings(sheetName, filteredListings, []models.Listing{}, urlStr, filterInfo)
 	if err != nil {
 		log.Printf("Warning: Failed to write to Google Sheets: %v\n", err)
 	} else {
