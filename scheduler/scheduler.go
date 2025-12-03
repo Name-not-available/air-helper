@@ -434,18 +434,25 @@ func (s *Scheduler) processSearchLink(
 	// Parse listings
 	var allListings []models.Listing
 	for i, html := range htmlPages {
-		log.Printf("Link %d: Parsing page %d/%d\n", link.LinkNumber, i+1, pagesFetched)
+		pageNum := i + 1
+		log.Printf("Link %d: Parsing page %d/%d\n", link.LinkNumber, pageNum, pagesFetched)
+		
+		// Send update every 10 pages
+		if pageNum%10 == 0 || pageNum == 1 {
+			s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
+				fmt.Sprintf("📄 Link %d: Parsing page %d/%d...", link.LinkNumber, pageNum, pagesFetched))
+		}
+		
 		listings, err := parserInstance.ParseHTML(html)
 		if err != nil {
-			log.Printf("Warning: Failed to parse page %d: %v\n", i+1, err)
+			log.Printf("Warning: Failed to parse page %d: %v\n", pageNum, err)
 			continue
 		}
-		log.Printf("Link %d: Parsed page %d: found %d listings\n", link.LinkNumber, i+1, len(listings))
+		log.Printf("Link %d: Parsed page %d: found %d listings\n", link.LinkNumber, pageNum, len(listings))
 		
 		// Set page number and link number for each listing
-		pageNumber := i + 1
 		for j := range listings {
-			listings[j].PageNumber = pageNumber
+			listings[j].PageNumber = pageNum
 			listings[j].LinkNumber = link.LinkNumber
 		}
 		allListings = append(allListings, listings...)
@@ -498,8 +505,15 @@ func (s *Scheduler) processSearchLink(
 
 	if filteredCount == 0 {
 		// No filtered listings, but that's not an error
+		s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
+			fmt.Sprintf("📋 Link %d: %d listings parsed, 0 matched filters", link.LinkNumber, totalListings))
 		return nil, unfilteredListings, pagesFetched, totalListings, nil
 	}
+
+	// Notify about filtering results
+	s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
+		fmt.Sprintf("📋 Link %d: %d listings parsed, %d matched filters. Enriching details...", 
+			link.LinkNumber, totalListings, filteredCount))
 
 	// Save basic listings to database
 	urlToIDMap := make(map[string]int)
@@ -697,11 +711,19 @@ func (s *Scheduler) enrichListings(
 		close(results)
 	}()
 
-	// Collect results
+	// Collect results with progress updates
 	enrichedListings := make([]models.Listing, filteredCount)
+	processedCount := 0
 	for result := range results {
+		processedCount++
 		if result.success {
 			enrichedListings[result.index] = result.listing
+		}
+		
+		// Send update every 20 listings or on completion
+		if processedCount%20 == 0 || processedCount == filteredCount {
+			s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
+				fmt.Sprintf("🔍 Link %d: Enriched %d/%d listings...", linkNumber, processedCount, filteredCount))
 		}
 	}
 
