@@ -573,6 +573,7 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 
 				// Send spreadsheet link as separate message and pin it
 				spreadsheetMsg := tgbotapi.NewMessage(update.Message.Chat.ID, fmt.Sprintf("📊 Spreadsheet: %s", spreadsheetURL))
+				spreadsheetMsg.DisableWebPagePreview = true
 				sentSpreadsheetMsg, err := bot.Send(spreadsheetMsg)
 				if err == nil {
 					pinMsg := tgbotapi.PinChatMessageConfig{

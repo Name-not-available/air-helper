@@ -815,6 +815,7 @@ func (s *Scheduler) sendStatusUpdate(messageID int, userID int64, text string) {
 	msg := tgbotapi.NewMessage(userID, text)
 	msg.ReplyToMessageID = messageID
 	msg.ParseMode = "HTML"
+	msg.DisableWebPagePreview = true
 	_, err := s.bot.Send(msg)
 	if err != nil {
 		log.Printf("Error sending status update: %v\n", err)
