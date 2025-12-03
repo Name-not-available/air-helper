@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -35,27 +34,22 @@ func extractURLPath(urlStr string) string {
 
 // RodFetcher implements the Fetcher interface using rod (headless browser)
 type RodFetcher struct {
-	browser  *rod.Browser
-	launcher *rodlauncher.Launcher
+	browser     *rod.Browser
+	launcher    *rodlauncher.Launcher
+	userDataDir string // Temporary directory to clean up on close
 }
 
 // NewRodFetcher creates a new RodFetcher instance
 func NewRodFetcher() (*RodFetcher, error) {
-	// Get user data directory from environment or use default
-	// Prefer mounted memory at /tmp/air-data to offload pressure from RAM
-	userDataDir := os.Getenv("BOT_DATA_DIR")
-	if userDataDir == "" {
-		if info, err := os.Stat("/tmp/air-data"); err == nil && info.IsDir() {
-			userDataDir = filepath.Join("/tmp/air-data", "browser-data")
-		} else {
-			userDataDir = filepath.Join(os.TempDir(), "bnb-data")
-		}
-	}
-
-	// Create directory if it doesn't exist
-	if err := os.MkdirAll(userDataDir, 0755); err != nil {
-		log.Printf("Warning: Failed to create bot data directory %s: %v\n", userDataDir, err)
-		userDataDir = "" // Fall back to default if we can't create it
+	// Create a unique temporary directory for this browser instance
+	// This avoids profile locking issues when multiple instances run or when 
+	// previous instances didn't close properly
+	userDataDir, err := os.MkdirTemp("", "bnb-browser-*")
+	if err != nil {
+		log.Printf("Warning: Failed to create temp directory, using default: %v\n", err)
+		userDataDir = "" // Fall back to default
+	} else {
+		log.Printf("Using temporary browser profile: %s\n", userDataDir)
 	}
 
 	// Try to use system Chrome first, fallback to downloading Chromium
@@ -146,12 +140,13 @@ func NewRodFetcher() (*RodFetcher, error) {
 	}
 
 	return &RodFetcher{
-		browser:  browser,
-		launcher: rodLauncher,
+		browser:     browser,
+		launcher:    rodLauncher,
+		userDataDir: userDataDir,
 	}, nil
 }
 
-// Close closes the browser
+// Close closes the browser and cleans up temporary files
 func (rf *RodFetcher) Close() error {
 	var err error
 	if rf.browser != nil {
@@ -159,6 +154,14 @@ func (rf *RodFetcher) Close() error {
 	}
 	if rf.launcher != nil {
 		rf.launcher.Kill()
+	}
+	// Clean up temporary user data directory
+	if rf.userDataDir != "" {
+		if removeErr := os.RemoveAll(rf.userDataDir); removeErr != nil {
+			log.Printf("Warning: Failed to clean up browser profile %s: %v\n", rf.userDataDir, removeErr)
+		} else {
+			log.Printf("Cleaned up temporary browser profile: %s\n", rf.userDataDir)
+		}
 	}
 	return err
 }
