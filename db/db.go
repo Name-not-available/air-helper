@@ -160,6 +160,34 @@ func (db *DB) initSchema() error {
 		return fmt.Errorf("failed to create listing_reviews table: %w", err)
 	}
 
+	// Create search_links table for multi-link support
+	_, err = db.conn.Exec(`
+		CREATE TABLE IF NOT EXISTS search_links (
+			id SERIAL PRIMARY KEY,
+			request_id INTEGER NOT NULL REFERENCES requests(id) ON DELETE CASCADE,
+			link_number INTEGER NOT NULL,
+			url TEXT NOT NULL,
+			status VARCHAR(20) NOT NULL DEFAULT 'pending',
+			retry_count INTEGER NOT NULL DEFAULT 0,
+			listings_count INTEGER NOT NULL DEFAULT 0,
+			last_error TEXT,
+			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			CONSTRAINT valid_search_link_status CHECK (status IN ('pending', 'in_progress', 'done', 'failed'))
+		)
+	`)
+	if err != nil {
+		return fmt.Errorf("failed to create search_links table: %w", err)
+	}
+
+	// Add link_number column to listings table if it doesn't exist
+	_, err = db.conn.Exec(`
+		ALTER TABLE listings ADD COLUMN IF NOT EXISTS link_number INTEGER
+	`)
+	if err != nil {
+		log.Printf("Warning: Failed to add link_number column to listings (may already exist): %v\n", err)
+	}
+
 	// Create indexes
 	_, err = db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_requests_status ON requests(status)`)
 	if err != nil {
@@ -184,6 +212,21 @@ func (db *DB) initSchema() error {
 	_, err = db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_listing_reviews_date ON listing_reviews(date)`)
 	if err != nil {
 		log.Printf("Warning: Failed to create index on listing_reviews.date: %v\n", err)
+	}
+
+	_, err = db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_search_links_request_id ON search_links(request_id)`)
+	if err != nil {
+		log.Printf("Warning: Failed to create index on search_links.request_id: %v\n", err)
+	}
+
+	_, err = db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_search_links_status ON search_links(status)`)
+	if err != nil {
+		log.Printf("Warning: Failed to create index on search_links.status: %v\n", err)
+	}
+
+	_, err = db.conn.Exec(`CREATE INDEX IF NOT EXISTS idx_listings_link_number ON listings(link_number)`)
+	if err != nil {
+		log.Printf("Warning: Failed to create index on listings.link_number: %v\n", err)
 	}
 
 	log.Println("Database schema initialized successfully")

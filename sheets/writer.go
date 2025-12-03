@@ -83,7 +83,7 @@ func (w *Writer) WriteListings(listings []models.Listing, clearFirst bool) error
 	var values [][]interface{}
 
 	// Add header row
-	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number",
+	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number", "Link #",
 		"Superhost", "Guest Favorite", "Bedrooms", "Bathrooms", "Beds", "Description", "House Rules", "Newest Review Date"}
 	values = append(values, header)
 
@@ -94,6 +94,12 @@ func (w *Writer) WriteListings(listings []models.Listing, clearFirst bool) error
 			newestReviewDate = listing.NewestReviewDate.Format("2006-01-02")
 		}
 
+		// Format link number (empty if 0 for backwards compatibility)
+		var linkNumber interface{}
+		if listing.LinkNumber > 0 {
+			linkNumber = listing.LinkNumber
+		}
+
 		row := []interface{}{
 			listing.Title,
 			listing.URL,
@@ -102,6 +108,7 @@ func (w *Writer) WriteListings(listings []models.Listing, clearFirst bool) error
 			listing.Stars,
 			listing.ReviewCount,
 			listing.PageNumber,
+			linkNumber,
 			listing.IsSuperhost,
 			listing.IsGuestFavorite,
 			listing.Bedrooms,
@@ -172,6 +179,12 @@ func (w *Writer) AppendListings(listings []models.Listing) error {
 			newestReviewDate = listing.NewestReviewDate.Format("2006-01-02")
 		}
 
+		// Format link number (empty if 0 for backwards compatibility)
+		var linkNumber interface{}
+		if listing.LinkNumber > 0 {
+			linkNumber = listing.LinkNumber
+		}
+
 		row := []interface{}{
 			listing.Title,
 			listing.URL,
@@ -180,6 +193,7 @@ func (w *Writer) AppendListings(listings []models.Listing) error {
 			listing.Stars,
 			listing.ReviewCount,
 			listing.PageNumber,
+			linkNumber,
 			listing.IsSuperhost,
 			listing.IsGuestFavorite,
 			listing.Bedrooms,
@@ -267,7 +281,7 @@ func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models
 	}
 
 	// Add header row
-	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number",
+	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number", "Link #",
 		"Superhost", "Guest Favorite", "Bedrooms", "Bathrooms", "Beds", "Description", "House Rules", "Newest Review Date"}
 	values = append(values, header)
 
@@ -278,6 +292,12 @@ func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models
 			newestReviewDate = listing.NewestReviewDate.Format("2006-01-02")
 		}
 
+		// Format link number (empty if 0 for backwards compatibility)
+		var linkNumber interface{}
+		if listing.LinkNumber > 0 {
+			linkNumber = listing.LinkNumber
+		}
+
 		row := []interface{}{
 			listing.Title,
 			listing.URL,
@@ -286,6 +306,7 @@ func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models
 			listing.Stars,
 			listing.ReviewCount,
 			listing.PageNumber,
+			linkNumber,
 			listing.IsSuperhost,
 			listing.IsGuestFavorite,
 			listing.Bedrooms,

@@ -640,26 +640,57 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 			continue
 		}
 
-		// Handle URL messages
-		url := strings.TrimSpace(update.Message.Text)
-		if url == "" {
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Please send me a Bnb search URL.")
+		// Handle URL messages - support multiple URLs separated by newlines
+		messageText := strings.TrimSpace(update.Message.Text)
+		if messageText == "" {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Please send me a Bnb search URL (or multiple URLs, one per line).")
 			bot.Send(msg)
 			continue
 		}
 
-		// Validate URL
-		if !strings.HasPrefix(url, "http://") && !strings.HasPrefix(url, "https://") {
-			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Please send a valid URL starting with http:// or https://")
+		// Split by newlines and validate each URL
+		lines := strings.Split(messageText, "\n")
+		var validURLs []string
+		var invalidLines []string
+
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+
+			// Validate URL
+			if !strings.HasPrefix(line, "http://") && !strings.HasPrefix(line, "https://") {
+				invalidLines = append(invalidLines, line)
+				continue
+			}
+
+			// Add currency=USD to URL
+			urlWithCurrency := addCurrencyToURL(line)
+			validURLs = append(validURLs, urlWithCurrency)
+		}
+
+		// If no valid URLs found
+		if len(validURLs) == 0 {
+			msg := tgbotapi.NewMessage(update.Message.Chat.ID, "Please send valid URLs starting with http:// or https://")
 			bot.Send(msg)
 			continue
 		}
 
-		// Add currency=USD to URL
-		url = addCurrencyToURL(url)
+		// Warn about invalid lines if any
+		if len(invalidLines) > 0 {
+			warnMsg := fmt.Sprintf("⚠️ Skipped %d invalid line(s) that don't look like URLs.", len(invalidLines))
+			bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, warnMsg))
+		}
 
 		// Send processing message
-		processingMsg := tgbotapi.NewMessage(update.Message.Chat.ID, "📝 Request received! Your request has been queued and will be processed shortly. You'll receive status updates as the scraping progresses.")
+		var processingText string
+		if len(validURLs) == 1 {
+			processingText = "📝 Request received! Your request has been queued and will be processed shortly. You'll receive status updates as the scraping progresses."
+		} else {
+			processingText = fmt.Sprintf("📝 Request received with %d links! Your request has been queued and will be processed shortly. Each link will be processed sequentially.", len(validURLs))
+		}
+		processingMsg := tgbotapi.NewMessage(update.Message.Chat.ID, processingText)
 		processingMsg.ReplyMarkup = configKeyboard
 		sentMsg, err := bot.Send(processingMsg)
 		if err != nil {
@@ -667,8 +698,11 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 			continue
 		}
 
+		// Store all URLs joined together in request (first URL for display)
+		allURLsJoined := strings.Join(validURLs, "\n")
+
 		// Save request to database
-		req, err := database.CreateRequest(userID, sentMsg.MessageID, url)
+		req, err := database.CreateRequest(userID, sentMsg.MessageID, allURLsJoined)
 		if err != nil {
 			log.Printf("Error creating request: %v\n", err)
 			errorMsg := tgbotapi.NewEditMessageText(update.Message.Chat.ID, sentMsg.MessageID, fmt.Sprintf("❌ Error: Failed to create request: %v", err))
@@ -676,7 +710,16 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 			continue
 		}
 
-		log.Printf("Created request ID %d for user %d\n", req.ID, userID)
+		// Create search_links entries for each URL
+		_, err = database.CreateSearchLinks(req.ID, validURLs)
+		if err != nil {
+			log.Printf("Error creating search links: %v\n", err)
+			errorMsg := tgbotapi.NewEditMessageText(update.Message.Chat.ID, sentMsg.MessageID, fmt.Sprintf("❌ Error: Failed to create search links: %v", err))
+			bot.Send(errorMsg)
+			continue
+		}
+
+		log.Printf("Created request ID %d for user %d with %d search links\n", req.ID, userID, len(validURLs))
 	}
 }
 

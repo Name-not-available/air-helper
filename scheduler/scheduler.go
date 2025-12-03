@@ -156,8 +156,27 @@ func (s *Scheduler) processNextRequest() {
 		return
 	}
 
-	// Send status update to Telegram
-	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, "🔄 Processing request... Starting scraping...")
+	// Get search links for this request
+	searchLinks, err := s.db.GetSearchLinksByRequestID(req.ID)
+	if err != nil {
+		log.Printf("Error getting search links: %v\n", err)
+		s.handleRequestError(req, err)
+		return
+	}
+
+	// If no search links exist (legacy request), create one from the URL
+	if len(searchLinks) == 0 {
+		log.Printf("No search links found, creating one from request URL\n")
+		searchLinks, err = s.db.CreateSearchLinks(req.ID, []string{req.URL})
+		if err != nil {
+			log.Printf("Error creating search link: %v\n", err)
+			s.handleRequestError(req, err)
+			return
+		}
+	}
+
+	totalLinks := len(searchLinks)
+	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("🔄 Processing request with %d link(s)...", totalLinks))
 
 	// Get user config
 	userConfig, err := s.db.GetUserConfig(req.UserID)
@@ -192,83 +211,298 @@ func (s *Scheduler) processNextRequest() {
 	}()
 
 	fetcherInstance := fetcher.Fetcher(rodFetcher)
+	filterInstance := filter.NewFilter(cfg)
+	parserInstance := parser.NewParser()
+	detailFetcher := fetcher.NewDetailFetcher(rodFetcher.GetBrowser())
+	detailParser := parser.NewDetailParser()
 
-	// Fetch pages
-	log.Printf("Using maxPages from user config: %d\n", userConfig.MaxPages)
-	htmlPages, err := fetcherInstance.Fetch(req.URL, userConfig.MaxPages)
-	if err != nil {
-		log.Printf("Error scraping: %v\n", err)
-		s.handleRequestError(req, err)
-		return
+	// Track seen listing URLs across all links for deduplication
+	seenListingURLs := make(map[string]int) // URL -> link number that first found it
+
+	// Collect all listings from all links
+	var allEnrichedListings []models.Listing
+	var allUnfilteredListings []models.Listing
+	var totalListingsBeforeFilter int
+	var totalPagesFetched int
+
+	// Create retry queue from search links
+	type queueItem struct {
+		link       db.SearchLink
+		retryCount int
 	}
-	pagesFetched := len(htmlPages)
+	queue := make([]queueItem, 0, len(searchLinks))
+	for _, link := range searchLinks {
+		queue = append(queue, queueItem{link: link, retryCount: link.RetryCount})
+	}
 
-	if len(htmlPages) == 0 {
-		err := fmt.Errorf("no HTML pages were collected")
+	// Track statistics
+	linksSuccessful := 0
+	linksFailed := 0
+
+	// Process links with retry queue
+	for len(queue) > 0 {
+		// Pop first item from queue
+		item := queue[0]
+		queue = queue[1:]
+		link := item.link
+
+		// Check if this is a retry and we need to wait
+		if item.retryCount > 0 {
+			waitMinutes := 3 + (item.retryCount-1) // 3 min for first retry, 4 for second, 5 for third
+			if waitMinutes > 5 {
+				waitMinutes = 5
+			}
+			s.sendStatusUpdate(req.TelegramMessageID, req.UserID, 
+				fmt.Sprintf("⏳ Waiting %d minutes before retrying link %d...", waitMinutes, link.LinkNumber))
+			log.Printf("Waiting %d minutes before retrying link %d\n", waitMinutes, link.LinkNumber)
+			time.Sleep(time.Duration(waitMinutes) * time.Minute)
+		}
+
+		// Notify user we're starting this link
+		shortURL := shortenURL(link.URL)
+		if item.retryCount > 0 {
+			s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
+				fmt.Sprintf("🔄 Retrying link %d/%d (attempt %d/3): %s", link.LinkNumber, totalLinks, item.retryCount+1, shortURL))
+		} else {
+			s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
+				fmt.Sprintf("🔗 Starting link %d/%d: %s", link.LinkNumber, totalLinks, shortURL))
+		}
+
+		// Update link status to in_progress
+		if err := s.db.UpdateSearchLinkStatus(link.ID, "in_progress", nil); err != nil {
+			log.Printf("Error updating search link status: %v\n", err)
+		}
+
+		// Process this link
+		linkListings, linkUnfiltered, pagesFetched, listingsBeforeFilter, linkErr := s.processSearchLink(
+			req, link, userConfig, fetcherInstance, filterInstance, parserInstance,
+			detailFetcher, detailParser, seenListingURLs, cfg,
+		)
+
+		if linkErr != nil {
+			errStr := linkErr.Error()
+			log.Printf("Link %d failed: %v\n", link.LinkNumber, linkErr)
+
+			// Check if we should retry
+			if item.retryCount < 3 {
+				// Push to end of queue for retry
+				if err := s.db.IncrementSearchLinkRetry(link.ID); err != nil {
+					log.Printf("Error incrementing retry count: %v\n", err)
+				}
+				// Update link from DB to get new retry count
+				updatedLink, _ := s.db.GetSearchLinkByID(link.ID)
+				if updatedLink != nil {
+					queue = append(queue, queueItem{link: *updatedLink, retryCount: updatedLink.RetryCount})
+				} else {
+					item.retryCount++
+					queue = append(queue, queueItem{link: link, retryCount: item.retryCount})
+				}
+				s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
+					fmt.Sprintf("⚠️ Link %d failed, will retry later (attempt %d/3): %s", 
+						link.LinkNumber, item.retryCount+1, truncateError(errStr)))
+			} else {
+				// Max retries reached, mark as permanently failed
+				if err := s.db.UpdateSearchLinkStatus(link.ID, "failed", &errStr); err != nil {
+					log.Printf("Error updating search link status to failed: %v\n", err)
+				}
+				linksFailed++
+				s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
+					fmt.Sprintf("❌ Link %d permanently failed after 3 attempts: %s", 
+						link.LinkNumber, truncateError(errStr)))
+			}
+		} else {
+			// Success!
+			if err := s.db.UpdateSearchLinkStatus(link.ID, "done", nil); err != nil {
+				log.Printf("Error updating search link status to done: %v\n", err)
+			}
+			if err := s.db.UpdateSearchLinkListingsCount(link.ID, len(linkListings)); err != nil {
+				log.Printf("Error updating search link listings count: %v\n", err)
+			}
+
+			linksSuccessful++
+			totalPagesFetched += pagesFetched
+			totalListingsBeforeFilter += listingsBeforeFilter
+
+			allEnrichedListings = append(allEnrichedListings, linkListings...)
+			allUnfilteredListings = append(allUnfilteredListings, linkUnfiltered...)
+
+			s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
+				fmt.Sprintf("✅ Link %d completed: %d listings found (%d new after dedup)", 
+					link.LinkNumber, listingsBeforeFilter, len(linkListings)))
+		}
+	}
+
+	// All links processed (or permanently failed)
+	totalFilteredListings := len(allEnrichedListings)
+
+	if totalFilteredListings == 0 && linksSuccessful == 0 {
+		err := fmt.Errorf("all %d links failed to process", totalLinks)
 		log.Printf("Error: %v\n", err)
 		s.handleRequestError(req, err)
 		return
 	}
 
-	// Parse listings and send status updates as pages are parsed
-	parserInstance := parser.NewParser()
-	var allListings []models.Listing
+	// Update request counts
+	if err := s.db.UpdateRequestCounts(req.ID, totalFilteredListings, totalPagesFetched); err != nil {
+		log.Printf("Error updating request counts: %v\n", err)
+	}
 
+	// Create sheet name from request ID and timestamp
+	sheetName := fmt.Sprintf("Request_%d_%s", req.ID, time.Now().Format("20060102_150405"))
+
+	// Format filter information
+	filterInfo := fmt.Sprintf("Min Reviews: %d, Min Price: %.2f, Max Price: %.2f, Min Stars: %.2f",
+		cfg.Filters.MinReviews, cfg.Filters.MinPrice, cfg.Filters.MaxPrice, cfg.Filters.MinStars)
+
+	// Get first URL for metadata (or combine for multi-link)
+	metadataURL := req.URL
+	if totalLinks > 1 {
+		metadataURL = fmt.Sprintf("%d links - see Link # column", totalLinks)
+	}
+
+	// Write to Google Sheets (sheet will be inserted at the beginning)
+	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, "📊 Writing to Google Sheets...")
+	createdSheetName, sheetID, err := s.writer.CreateSheetAndWriteListings(sheetName, allEnrichedListings, allUnfilteredListings, metadataURL, filterInfo)
+	if err != nil {
+		log.Printf("Error writing to Google Sheets: %v\n", err)
+		s.handleRequestError(req, err)
+		return
+	}
+
+	// Update request with sheet name
+	if err := s.db.UpdateRequestSheetName(req.ID, createdSheetName); err != nil {
+		log.Printf("Warning: Failed to update sheet name: %v\n", err)
+	}
+
+	// Update status to 'done'
+	if err := s.db.UpdateRequestStatus(req.ID, "done"); err != nil {
+		log.Printf("Error updating request status to done: %v\n", err)
+		return
+	}
+
+	// Create URL that opens the specific sheet
+	sheetURL := s.createSheetURL(sheetID)
+
+	// Send success message
+	var successMsg string
+	if totalLinks == 1 {
+		successMsg = fmt.Sprintf(
+			"✅ Successfully fetched and added %d listings to Google Sheets!\n\n"+
+				"Found %d listings before filtering.\n"+
+				"Pages: %d fetched (requested: %d)\n\n"+
+				"View spreadsheet: %s",
+			totalFilteredListings, totalListingsBeforeFilter, totalPagesFetched, userConfig.MaxPages, sheetURL)
+	} else {
+		successMsg = fmt.Sprintf(
+			"✅ Completed processing %d links!\n\n"+
+				"Links: %d successful, %d failed\n"+
+				"Listings: %d after filtering (from %d total)\n"+
+				"Pages: %d fetched\n\n"+
+				"View spreadsheet: %s",
+			totalLinks, linksSuccessful, linksFailed,
+			totalFilteredListings, totalListingsBeforeFilter, totalPagesFetched, sheetURL)
+	}
+	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, successMsg)
+}
+
+// processSearchLink processes a single search link and returns the enriched listings
+func (s *Scheduler) processSearchLink(
+	req *db.Request,
+	link db.SearchLink,
+	userConfig *db.UserConfig,
+	fetcherInstance fetcher.Fetcher,
+	filterInstance *filter.Filter,
+	parserInstance *parser.Parser,
+	detailFetcher *fetcher.DetailFetcher,
+	detailParser *parser.DetailParser,
+	seenListingURLs map[string]int, // Shared across links for deduplication
+	cfg *config.FilterConfig,
+) (enrichedListings []models.Listing, unfilteredListings []models.Listing, pagesFetched int, totalListings int, err error) {
+
+	// Fetch pages for this link
+	log.Printf("Fetching link %d: %s (maxPages: %d)\n", link.LinkNumber, shortenURL(link.URL), userConfig.MaxPages)
+	htmlPages, err := fetcherInstance.Fetch(link.URL, userConfig.MaxPages)
+	if err != nil {
+		return nil, nil, 0, 0, fmt.Errorf("fetch failed: %w", err)
+	}
+	pagesFetched = len(htmlPages)
+
+	if len(htmlPages) == 0 {
+		return nil, nil, 0, 0, fmt.Errorf("no HTML pages collected")
+	}
+
+	// Parse listings
+	var allListings []models.Listing
 	for i, html := range htmlPages {
-		// Send status update as we start parsing each page
-		s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("📄 Parsing page %d/%d...", i+1, pagesFetched))
-		
-		log.Printf("Parsing page %d/%d\n", i+1, pagesFetched)
+		log.Printf("Link %d: Parsing page %d/%d\n", link.LinkNumber, i+1, pagesFetched)
 		listings, err := parserInstance.ParseHTML(html)
 		if err != nil {
 			log.Printf("Warning: Failed to parse page %d: %v\n", i+1, err)
 			continue
 		}
-		log.Printf("Parsed page %d: found %d listings\n", i+1, len(listings))
-		// Set page number for each listing
+		log.Printf("Link %d: Parsed page %d: found %d listings\n", link.LinkNumber, i+1, len(listings))
+		
+		// Set page number and link number for each listing
 		pageNumber := i + 1
 		for j := range listings {
 			listings[j].PageNumber = pageNumber
+			listings[j].LinkNumber = link.LinkNumber
 		}
 		allListings = append(allListings, listings...)
-		htmlPages[i] = "" // release HTML string promptly
+		htmlPages[i] = "" // release HTML
 	}
 	htmlPages = nil
 
-	totalListings := len(allListings)
-	log.Printf("Total listings parsed from all pages: %d\n", totalListings)
+	totalListings = len(allListings)
+	log.Printf("Link %d: Total listings parsed: %d\n", link.LinkNumber, totalListings)
 
 	if len(allListings) == 0 {
-		err := fmt.Errorf("no listings found in the fetched HTML")
-		log.Printf("Error: %v\n", err)
-		s.handleRequestError(req, err)
-		return
+		return nil, nil, pagesFetched, 0, fmt.Errorf("no listings found")
 	}
 
 	// Apply filters
-	filterInstance := filter.NewFilter(cfg)
 	filteredListings := filterInstance.ApplyFilters(allListings)
-	filteredCount := len(filteredListings)
 	
-	// Create a map of filtered listing URLs for quick lookup
+	// Deduplicate against already seen listings
+	uniqueFilteredListings := make([]models.Listing, 0, len(filteredListings))
+	for _, listing := range filteredListings {
+		if _, seen := seenListingURLs[listing.URL]; !seen {
+			seenListingURLs[listing.URL] = link.LinkNumber
+			uniqueFilteredListings = append(uniqueFilteredListings, listing)
+		} else {
+			log.Printf("Link %d: Skipping duplicate listing (first seen in link %d): %s\n", 
+				link.LinkNumber, seenListingURLs[listing.URL], extractURLPath(listing.URL))
+		}
+	}
+	filteredListings = uniqueFilteredListings
+
+	filteredCount := len(filteredListings)
+	log.Printf("Link %d: %d listings after filtering and deduplication\n", link.LinkNumber, filteredCount)
+
+	// Create map for unfiltered (but still need to dedupe)
 	filteredURLs := make(map[string]bool, filteredCount)
 	for _, listing := range filteredListings {
 		filteredURLs[listing.URL] = true
 	}
-	
-	// Keep unfiltered listings for spreadsheet (they'll be added at the bottom)
-	unfilteredListings := make([]models.Listing, 0, len(allListings)-filteredCount)
+
+	// Keep unfiltered listings (deduplicated)
 	for _, listing := range allListings {
 		if !filteredURLs[listing.URL] {
-			unfilteredListings = append(unfilteredListings, listing)
+			if _, seen := seenListingURLs[listing.URL]; !seen {
+				seenListingURLs[listing.URL] = link.LinkNumber
+				listing.LinkNumber = link.LinkNumber
+				unfilteredListings = append(unfilteredListings, listing)
+			}
 		}
 	}
 
-	// Save basic listings to database first (with status 'pending')
-	// Store URL -> listingID mapping for later updates
-	urlToIDMap := make(map[string]int)
-	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("💾 Saving %d listings to database...", filteredCount))
+	if filteredCount == 0 {
+		// No filtered listings, but that's not an error
+		return nil, unfilteredListings, pagesFetched, totalListings, nil
+	}
 
+	// Save basic listings to database
+	urlToIDMap := make(map[string]int)
 	for _, listing := range filteredListings {
 		var price *float64
 		var currency *string
@@ -288,45 +522,58 @@ func (s *Scheduler) processNextRequest() {
 			reviewCount = &listing.ReviewCount
 		}
 
-		// Save basic listing with status 'pending'
-		err := s.db.SaveListing(req.ID, listing.Title, listing.URL, price, currency, stars, reviewCount)
+		// Save basic listing with link number
+		err := s.db.SaveListingWithLinkNumber(req.ID, link.LinkNumber, listing.Title, listing.URL, price, currency, stars, reviewCount)
 		if err != nil {
-			log.Printf("Warning: Failed to save basic listing to database: %v\n", err)
+			log.Printf("Warning: Failed to save listing to database: %v\n", err)
 			continue
 		}
 
-		// Get the listing ID we just created
 		listingID, err := s.db.GetListingIDByURL(req.ID, listing.URL)
 		if err != nil {
-			log.Printf("Warning: Failed to get listing ID for URL %s: %v\n", extractURLPath(listing.URL), err)
+			log.Printf("Warning: Failed to get listing ID: %v\n", err)
 			continue
 		}
 		urlToIDMap[listing.URL] = listingID
 	}
 
-	log.Printf("Saved %d basic listings to database\n", len(urlToIDMap))
+	// Enrich listings with detail pages
+	enrichedListings = s.enrichListings(filteredListings, urlToIDMap, detailFetcher, detailParser, req, link.LinkNumber)
 
-	// Fetch detail pages and enrich listings in parallel using worker pool
-	// Use 2 workers to keep rate reasonable (10-15 listings per minute max)
+	return enrichedListings, unfilteredListings, pagesFetched, totalListings, nil
+}
+
+// enrichListings fetches detail pages and enriches listings
+func (s *Scheduler) enrichListings(
+	listings []models.Listing,
+	urlToIDMap map[string]int,
+	detailFetcher *fetcher.DetailFetcher,
+	detailParser *parser.DetailParser,
+	req *db.Request,
+	linkNumber int,
+) []models.Listing {
+	filteredCount := len(listings)
+	if filteredCount == 0 {
+		return nil
+	}
+
+	// Use 2 workers for rate limiting
 	numWorkers := 2
 	if filteredCount < numWorkers {
 		numWorkers = filteredCount
 	}
 
-	detailFetcher := fetcher.NewDetailFetcher(rodFetcher.GetBrowser())
-	detailParser := parser.NewDetailParser()
-
-	// Create channels for work distribution
+	// Create channels
 	jobs := make(chan struct {
-		index    int
-		listing  models.Listing
+		index     int
+		listing   models.Listing
 		listingID int
 	}, filteredCount)
 	results := make(chan struct {
-		index    int
-		listing  models.Listing
-		success  bool
-		err      error
+		index   int
+		listing models.Listing
+		success bool
+		err     error
 	}, filteredCount)
 
 	// Create worker pool
@@ -336,35 +583,33 @@ func (s *Scheduler) processNextRequest() {
 		go func(workerID int) {
 			defer wg.Done()
 			for job := range jobs {
-				// Fetch detail page
 				detailHTML, err := detailFetcher.FetchDetailPage(job.listing.URL)
 				if err != nil {
-					log.Printf("Worker %d: Failed to fetch detail page for %s: %v\n", workerID, extractURLPath(job.listing.URL), err)
+					log.Printf("Worker %d: Failed to fetch detail page: %v\n", workerID, err)
 					results <- struct {
-						index    int
-						listing  models.Listing
-						success  bool
-						err      error
+						index   int
+						listing models.Listing
+						success bool
+						err     error
 					}{job.index, job.listing, false, err}
 					s.db.UpdateListingStatus(job.listingID, "failed")
 					continue
 				}
 
-				// Parse detail page
 				detailData, err := detailParser.ParseDetailPage(detailHTML)
-				detailHTML = "" // Release memory immediately
+				detailHTML = ""
 				if err != nil {
-					log.Printf("Worker %d: Failed to parse detail page for %s: %v\n", workerID, extractURLPath(job.listing.URL), err)
+					log.Printf("Worker %d: Failed to parse detail page: %v\n", workerID, err)
 					results <- struct {
-						index    int
-						listing  models.Listing
-						success  bool
-						err      error
+						index   int
+						listing models.Listing
+						success bool
+						err     error
 					}{job.index, job.listing, false, err}
 					continue
 				}
 
-				// Merge detail data with listing data
+				// Merge detail data
 				job.listing.IsSuperhost = detailData.IsSuperhost
 				job.listing.IsGuestFavorite = detailData.IsGuestFavorite
 				job.listing.Bedrooms = detailData.Bedrooms
@@ -375,14 +620,10 @@ func (s *Scheduler) processNextRequest() {
 				job.listing.NewestReviewDate = detailData.NewestReviewDate
 				job.listing.Reviews = detailData.Reviews
 
-				// Update listing in database
-				var isSuperhost *bool
-				var isGuestFavorite *bool
-				var bedrooms *float64
-				var bathrooms *float64
-				var beds *float64
-				var description *string
-				var houseRules *string
+				// Update database
+				var isSuperhost, isGuestFavorite *bool
+				var bedrooms, bathrooms, beds *float64
+				var description, houseRules *string
 				var newestReviewDate *time.Time
 
 				if job.listing.Bedrooms > 0 {
@@ -404,151 +645,98 @@ func (s *Scheduler) processNextRequest() {
 				}
 				newestReviewDate = job.listing.NewestReviewDate
 
-				err = s.db.UpdateListingDetails(job.listingID, isSuperhost, isGuestFavorite, bedrooms, bathrooms, beds, description, houseRules, newestReviewDate)
-				if err != nil {
-					log.Printf("Worker %d: Failed to update listing details for listing %d: %v\n", workerID, job.listingID, err)
-				}
+				s.db.UpdateListingDetails(job.listingID, isSuperhost, isGuestFavorite, bedrooms, bathrooms, beds, description, houseRules, newestReviewDate)
 
-				// Save reviews
 				if len(job.listing.Reviews) > 0 {
-					if err := s.db.SaveReviews(job.listingID, job.listing.Reviews); err != nil {
-						log.Printf("Worker %d: Failed to save reviews for listing %d: %v\n", workerID, job.listingID, err)
-					}
+					s.db.SaveReviews(job.listingID, job.listing.Reviews)
 				}
-				// Release review memory
 				job.listing.Reviews = nil
 
 				results <- struct {
-					index    int
-					listing  models.Listing
-					success  bool
-					err      error
+					index   int
+					listing models.Listing
+					success bool
+					err     error
 				}{job.index, job.listing, true, nil}
 			}
 		}(w)
 	}
 
-	// Rate limiter: max 15 listings per minute (one every 4 seconds)
-	// This ensures we don't exceed 10-15 listings per minute
+	// Rate limiter
 	rateLimiter := time.NewTicker(4 * time.Second)
 	defer rateLimiter.Stop()
 
-	// Send jobs to workers with rate limiting
+	// Send jobs
 	go func() {
 		defer close(jobs)
-		for i, listing := range filteredListings {
+		for i, listing := range listings {
 			listingID, exists := urlToIDMap[listing.URL]
 			if !exists {
-				log.Printf("Warning: No listing ID found for URL: %s\n", extractURLPath(listing.URL))
 				results <- struct {
-					index    int
-					listing  models.Listing
-					success  bool
-					err      error
-				}{i, listing, false, fmt.Errorf("no listing ID found")}
+					index   int
+					listing models.Listing
+					success bool
+					err     error
+				}{i, listing, false, fmt.Errorf("no listing ID")}
 				continue
 			}
-			
-			// Wait for rate limiter (except for first job)
 			if i > 0 {
 				<-rateLimiter.C
 			}
-			
 			jobs <- struct {
-				index    int
-				listing  models.Listing
+				index     int
+				listing   models.Listing
 				listingID int
 			}{i, listing, listingID}
 		}
 	}()
 
-	// Close results channel when all workers are done
+	// Close results when done
 	go func() {
 		wg.Wait()
 		close(results)
 	}()
 
-	// Collect results and maintain order
+	// Collect results
 	enrichedListings := make([]models.Listing, filteredCount)
-	successCount := 0
-	failCount := 0
-	processedCount := 0
-
-	// Process results as they come in
 	for result := range results {
-		processedCount++
 		if result.success {
 			enrichedListings[result.index] = result.listing
-			successCount++
-			// Send status update every 5 listings or on completion
-			if processedCount%5 == 0 || processedCount == filteredCount {
-				s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("📄 Processed %d/%d listings...", processedCount, filteredCount))
-			}
-		} else {
-			failCount++
-			log.Printf("Failed to process listing %d: %v\n", result.index+1, result.err)
 		}
 	}
 
-	// Filter out empty listings (failed ones)
-	finalListings := make([]models.Listing, 0, successCount)
+	// Filter out empty (failed) listings
+	finalListings := make([]models.Listing, 0)
 	for _, listing := range enrichedListings {
 		if listing.URL != "" {
 			finalListings = append(finalListings, listing)
 		}
 	}
-	enrichedListings = finalListings
 
-	urlToIDMap = nil
+	return finalListings
+}
 
-	log.Printf("Detail parsing complete: %d successful, %d failed\n", successCount, failCount)
-	filteredListings = nil
-	allListings = nil // Now we can release allListings
-
-	// Update request counts
-	if err := s.db.UpdateRequestCounts(req.ID, filteredCount, pagesFetched); err != nil {
-		log.Printf("Error updating request counts: %v\n", err)
+// shortenURL creates a shortened display version of a URL
+func shortenURL(urlStr string) string {
+	// Remove protocol
+	if idx := strings.Index(urlStr, "://"); idx >= 0 {
+		urlStr = urlStr[idx+3:]
 	}
-
-	// Create sheet name from request ID and timestamp
-	sheetName := fmt.Sprintf("Request_%d_%s", req.ID, time.Now().Format("20060102_150405"))
-
-	// Format filter information
-	filterInfo := fmt.Sprintf("Min Reviews: %d, Min Price: %.2f, Max Price: %.2f, Min Stars: %.2f",
-		cfg.Filters.MinReviews, cfg.Filters.MinPrice, cfg.Filters.MaxPrice, cfg.Filters.MinStars)
-
-	// Write to Google Sheets (sheet will be inserted at the beginning)
-	// Include filtered listings at the bottom
-	createdSheetName, sheetID, err := s.writer.CreateSheetAndWriteListings(sheetName, enrichedListings, unfilteredListings, req.URL, filterInfo)
-	if err != nil {
-		log.Printf("Error writing to Google Sheets: %v\n", err)
-		s.handleRequestError(req, err)
-		return
+	// Remove www.
+	urlStr = strings.TrimPrefix(urlStr, "www.")
+	// Truncate if too long
+	if len(urlStr) > 50 {
+		urlStr = urlStr[:47] + "..."
 	}
-	enrichedListings = nil
+	return urlStr
+}
 
-	// Update request with sheet name
-	if err := s.db.UpdateRequestSheetName(req.ID, createdSheetName); err != nil {
-		log.Printf("Warning: Failed to update sheet name: %v\n", err)
+// truncateError truncates error message for display
+func truncateError(errStr string) string {
+	if len(errStr) > 100 {
+		return errStr[:97] + "..."
 	}
-
-	// Update status to 'done'
-	if err := s.db.UpdateRequestStatus(req.ID, "done"); err != nil {
-		log.Printf("Error updating request status to done: %v\n", err)
-		return
-	}
-
-	// Create URL that opens the specific sheet
-	sheetURL := s.createSheetURL(sheetID)
-
-	// Send success message
-	successMsg := fmt.Sprintf(
-		"✅ Successfully fetched and added %d listings to Google Sheets!\n\n"+
-			"Found %d listings before filtering.\n"+
-			"Pages: %d fetched (requested: %d)\n\n"+
-			"View spreadsheet: %s",
-		filteredCount, totalListings, pagesFetched, userConfig.MaxPages, sheetURL)
-	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, successMsg)
+	return errStr
 }
 
 // handleRequestError handles errors during request processing

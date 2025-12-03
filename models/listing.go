@@ -11,6 +11,7 @@ type Listing struct {
 	ReviewCount int
 	URL         string
 	PageNumber  int         // Page number where this listing was found
+	LinkNumber  int         // Which search link this listing came from (1-based, for multi-link requests)
 	AllPrices   []PriceInfo // For debugging: all prices found
 
 	// Detail page fields
