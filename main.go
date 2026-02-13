@@ -17,6 +17,7 @@ import (
 	"bnb-fetcher/filter"
 	"bnb-fetcher/models"
 	"bnb-fetcher/parser"
+	"bnb-fetcher/pricerange"
 	"bnb-fetcher/scheduler"
 	"bnb-fetcher/sheets"
 
@@ -684,12 +685,40 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 			bot.Send(tgbotapi.NewMessage(update.Message.Chat.ID, warnMsg))
 		}
 
+		// Expand URLs into price range sub-URLs ($50 steps)
+		var expandedURLs []string
+		var priceRangeLabels []string // parallel array: label for each expanded URL
+		totalOriginalURLs := len(validURLs)
+		hasPriceRanges := false
+
+		for _, u := range validURLs {
+			rangeURLs, err := pricerange.GeneratePriceRangeURLs(u, pricerange.DefaultStep)
+			if err != nil {
+				log.Printf("Warning: Failed to generate price ranges for URL: %v\n", err)
+				expandedURLs = append(expandedURLs, u)
+				priceRangeLabels = append(priceRangeLabels, "")
+				continue
+			}
+			if len(rangeURLs) > 1 {
+				hasPriceRanges = true
+			}
+			for _, r := range rangeURLs {
+				expandedURLs = append(expandedURLs, r.URL)
+				priceRangeLabels = append(priceRangeLabels, r.Label)
+			}
+		}
+
 		// Send processing message
 		var processingText string
-		if len(validURLs) == 1 {
+		if hasPriceRanges {
+			processingText = fmt.Sprintf(
+				"📝 Request received! Splitting into %d price range steps ($%d increments) from %d URL(s).\n"+
+					"Your request has been queued and will be processed shortly.",
+				len(expandedURLs), pricerange.DefaultStep, totalOriginalURLs)
+		} else if len(expandedURLs) == 1 {
 			processingText = "📝 Request received! Your request has been queued and will be processed shortly. You'll receive status updates as the scraping progresses."
 		} else {
-			processingText = fmt.Sprintf("📝 Request received with %d links! Your request has been queued and will be processed shortly. Each link will be processed sequentially.", len(validURLs))
+			processingText = fmt.Sprintf("📝 Request received with %d links! Your request has been queued and will be processed shortly. Each link will be processed sequentially.", len(expandedURLs))
 		}
 		processingMsg := tgbotapi.NewMessage(update.Message.Chat.ID, processingText)
 		processingMsg.ReplyMarkup = configKeyboard
@@ -699,7 +728,7 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 			continue
 		}
 
-		// Store all URLs joined together in request (first URL for display)
+		// Store first original URL in request (for display)
 		allURLsJoined := strings.Join(validURLs, "\n")
 
 		// Save request to database
@@ -711,8 +740,8 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 			continue
 		}
 
-		// Create search_links entries for each URL
-		_, err = database.CreateSearchLinks(req.ID, validURLs)
+		// Create search_links entries for each expanded URL
+		_, err = database.CreateSearchLinks(req.ID, expandedURLs)
 		if err != nil {
 			log.Printf("Error creating search links: %v\n", err)
 			errorMsg := tgbotapi.NewEditMessageText(update.Message.Chat.ID, sentMsg.MessageID, fmt.Sprintf("❌ Error: Failed to create search links: %v", err))
@@ -720,7 +749,8 @@ func runTelegramBot(configPath string, maxPages int, spreadsheetURL, credentials
 			continue
 		}
 
-		log.Printf("Created request ID %d for user %d with %d search links\n", req.ID, userID, len(validURLs))
+		log.Printf("Created request ID %d for user %d with %d search links (from %d original URLs, price ranges: %v)\n",
+			req.ID, userID, len(expandedURLs), totalOriginalURLs, hasPriceRanges)
 	}
 }
 

@@ -83,7 +83,7 @@ func (w *Writer) WriteListings(listings []models.Listing, clearFirst bool) error
 	var values [][]interface{}
 
 	// Add header row
-	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number", "Link #",
+	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number", "Link #", "Price Range",
 		"Superhost", "Guest Favorite", "Bedrooms", "Bathrooms", "Beds", "Description", "House Rules", "Newest Review Date"}
 	values = append(values, header)
 
@@ -100,6 +100,12 @@ func (w *Writer) WriteListings(listings []models.Listing, clearFirst bool) error
 			linkNumber = listing.LinkNumber
 		}
 
+		// Format price range label
+		var priceRangeLabel interface{}
+		if listing.PriceRangeLabel != "" {
+			priceRangeLabel = listing.PriceRangeLabel
+		}
+
 		row := []interface{}{
 			listing.Title,
 			listing.URL,
@@ -109,6 +115,7 @@ func (w *Writer) WriteListings(listings []models.Listing, clearFirst bool) error
 			listing.ReviewCount,
 			listing.PageNumber,
 			linkNumber,
+			priceRangeLabel,
 			listing.IsSuperhost,
 			listing.IsGuestFavorite,
 			listing.Bedrooms,
@@ -185,6 +192,12 @@ func (w *Writer) AppendListings(listings []models.Listing) error {
 			linkNumber = listing.LinkNumber
 		}
 
+		// Format price range label
+		var priceRangeLabel interface{}
+		if listing.PriceRangeLabel != "" {
+			priceRangeLabel = listing.PriceRangeLabel
+		}
+
 		row := []interface{}{
 			listing.Title,
 			listing.URL,
@@ -194,6 +207,7 @@ func (w *Writer) AppendListings(listings []models.Listing) error {
 			listing.ReviewCount,
 			listing.PageNumber,
 			linkNumber,
+			priceRangeLabel,
 			listing.IsSuperhost,
 			listing.IsGuestFavorite,
 			listing.Bedrooms,
@@ -281,7 +295,7 @@ func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models
 	}
 
 	// Add header row
-	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number", "Link #",
+	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number", "Link #", "Price Range",
 		"Superhost", "Guest Favorite", "Bedrooms", "Bathrooms", "Beds", "Description", "House Rules", "Newest Review Date"}
 	values = append(values, header)
 
@@ -298,6 +312,12 @@ func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models
 			linkNumber = listing.LinkNumber
 		}
 
+		// Format price range label
+		var priceRangeLabel interface{}
+		if listing.PriceRangeLabel != "" {
+			priceRangeLabel = listing.PriceRangeLabel
+		}
+
 		row := []interface{}{
 			listing.Title,
 			listing.URL,
@@ -307,6 +327,7 @@ func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models
 			listing.ReviewCount,
 			listing.PageNumber,
 			linkNumber,
+			priceRangeLabel,
 			listing.IsSuperhost,
 			listing.IsGuestFavorite,
 			listing.Bedrooms,

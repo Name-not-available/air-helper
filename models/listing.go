@@ -10,9 +10,10 @@ type Listing struct {
 	Stars       float64
 	ReviewCount int
 	URL         string
-	PageNumber  int         // Page number where this listing was found
-	LinkNumber  int         // Which search link this listing came from (1-based, for multi-link requests)
-	AllPrices   []PriceInfo // For debugging: all prices found
+	PageNumber      int         // Page number where this listing was found
+	LinkNumber      int         // Which search link this listing came from (1-based, for multi-link requests)
+	PriceRangeLabel string      // Price range label (e.g., "$0-$50") for price range scanning
+	AllPrices       []PriceInfo // For debugging: all prices found
 
 	// Detail page fields
 	IsSuperhost      bool

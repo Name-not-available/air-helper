@@ -18,6 +18,7 @@ import (
 	"bnb-fetcher/filter"
 	"bnb-fetcher/models"
 	"bnb-fetcher/parser"
+	"bnb-fetcher/pricerange"
 	"bnb-fetcher/sheets"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -239,6 +240,15 @@ func (s *Scheduler) processNextRequest() {
 	linksSuccessful := 0
 	linksFailed := 0
 
+	// Track per-price-range statistics
+	type priceRangeStat struct {
+		Label          string
+		ListingsFound  int // total listings parsed (before filter)
+		ListingsKept   int // listings after filter
+		LinkNumber     int
+	}
+	var priceRangeStats []priceRangeStat
+
 	// Process links with retry queue
 	for len(queue) > 0 {
 		// Pop first item from queue
@@ -323,12 +333,29 @@ func (s *Scheduler) processNextRequest() {
 			totalPagesFetched += pagesFetched
 			totalListingsBeforeFilter += listingsBeforeFilter
 
+			// Extract price range label from the link URL and set it on listings
+			rangeLabel := pricerange.ExtractPriceRangeLabel(link.URL)
+			for i := range linkListings {
+				linkListings[i].PriceRangeLabel = rangeLabel
+			}
+			for i := range linkUnfiltered {
+				linkUnfiltered[i].PriceRangeLabel = rangeLabel
+			}
+
 			allEnrichedListings = append(allEnrichedListings, linkListings...)
 			allUnfilteredListings = append(allUnfilteredListings, linkUnfiltered...)
 
+			// Track price range statistics
+			priceRangeStats = append(priceRangeStats, priceRangeStat{
+				Label:          rangeLabel,
+				ListingsFound:  listingsBeforeFilter,
+				ListingsKept:   len(linkListings),
+				LinkNumber:     link.LinkNumber,
+			})
+
 			s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
-				fmt.Sprintf("✅ Link %d completed: %d listings found (%d new after dedup)", 
-					link.LinkNumber, listingsBeforeFilter, len(linkListings)))
+				fmt.Sprintf("✅ Link %d [%s] completed: %d listings found (%d new after dedup)", 
+					link.LinkNumber, rangeLabel, listingsBeforeFilter, len(linkListings)))
 		}
 	}
 
@@ -383,6 +410,17 @@ func (s *Scheduler) processNextRequest() {
 	// Create URL that opens the specific sheet
 	sheetURL := s.createSheetURL(sheetID)
 
+	// Build price range summary if we have stats
+	var priceRangeSummary string
+	if len(priceRangeStats) > 1 {
+		var summaryLines []string
+		summaryLines = append(summaryLines, "\n📊 Listings per price range:")
+		for _, stat := range priceRangeStats {
+			summaryLines = append(summaryLines, fmt.Sprintf("  %s: %d found, %d kept", stat.Label, stat.ListingsFound, stat.ListingsKept))
+		}
+		priceRangeSummary = strings.Join(summaryLines, "\n")
+	}
+
 	// Send success message
 	var successMsg string
 	if totalLinks == 1 {
@@ -402,6 +440,12 @@ func (s *Scheduler) processNextRequest() {
 			totalLinks, linksSuccessful, linksFailed,
 			totalFilteredListings, totalListingsBeforeFilter, totalPagesFetched, sheetURL)
 	}
+
+	// Append price range summary if available
+	if priceRangeSummary != "" {
+		successMsg += priceRangeSummary
+	}
+
 	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, successMsg)
 }
 
