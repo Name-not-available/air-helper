@@ -358,6 +358,121 @@ func (w *Writer) CreateSheetAndWriteListings(sheetName string, listings []models
 	return sheetName, sheetID, nil
 }
 
+// CreateEmptySheet creates a new sheet at index 0 with metadata row and header row only (no listing data).
+// Returns the sheet name and sheet ID (gid).
+func (w *Writer) CreateEmptySheet(sheetName string, url string, filterInfo string) (string, int64, error) {
+	sheetName = sanitizeSheetName(sheetName)
+	if len(sheetName) > 100 {
+		sheetName = sheetName[:100]
+	}
+
+	insertIndex := int64(0)
+	addSheetRequest := &sheets.AddSheetRequest{
+		Properties: &sheets.SheetProperties{
+			Title: sheetName,
+			Index: insertIndex,
+		},
+	}
+
+	batchUpdateRequest := &sheets.BatchUpdateSpreadsheetRequest{
+		Requests: []*sheets.Request{
+			{AddSheet: addSheetRequest},
+		},
+	}
+
+	batchUpdateResp, err := w.service.Spreadsheets.BatchUpdate(w.spreadsheetID, batchUpdateRequest).Do()
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to create sheet: %w", err)
+	}
+
+	var sheetID int64
+	if len(batchUpdateResp.Replies) > 0 && batchUpdateResp.Replies[0].AddSheet != nil {
+		sheetID = batchUpdateResp.Replies[0].AddSheet.Properties.SheetId
+	}
+
+	log.Printf("Created empty sheet '%s' with ID %d at index %d\n", sheetName, sheetID, insertIndex)
+
+	var values [][]interface{}
+	if url != "" || filterInfo != "" {
+		metadataRow := []interface{}{"URL", url}
+		if filterInfo != "" {
+			metadataRow = append(metadataRow, "Filters", filterInfo)
+		}
+		values = append(values, metadataRow)
+	}
+
+	header := []interface{}{"Title", "Link", "Price", "Currency", "Rating", "Review Count", "Page Number", "Link #", "Price Range",
+		"Superhost", "Guest Favorite", "Bedrooms", "Bathrooms", "Beds", "Description", "House Rules", "Newest Review Date"}
+	values = append(values, header)
+
+	range_ := fmt.Sprintf("%s!A1", sheetName)
+	valueRange := &sheets.ValueRange{Values: values}
+	_, err = w.service.Spreadsheets.Values.Update(w.spreadsheetID, range_, valueRange).
+		ValueInputOption("RAW").
+		Do()
+	if err != nil {
+		return "", 0, fmt.Errorf("failed to write header to sheet: %w", err)
+	}
+
+	return sheetName, sheetID, nil
+}
+
+// AppendListingsToSheet appends listing rows to a named sheet. Uses the Append API to add rows after existing content.
+func (w *Writer) AppendListingsToSheet(sheetName string, listings []models.Listing) error {
+	if len(listings) == 0 {
+		return nil
+	}
+
+	var values [][]interface{}
+	for _, listing := range listings {
+		var newestReviewDate interface{}
+		if listing.NewestReviewDate != nil {
+			newestReviewDate = listing.NewestReviewDate.Format("2006-01-02")
+		}
+		var linkNumber interface{}
+		if listing.LinkNumber > 0 {
+			linkNumber = listing.LinkNumber
+		}
+		var priceRangeLabel interface{}
+		if listing.PriceRangeLabel != "" {
+			priceRangeLabel = listing.PriceRangeLabel
+		}
+		row := []interface{}{
+			listing.Title,
+			listing.URL,
+			listing.Price,
+			listing.Currency,
+			listing.Stars,
+			listing.ReviewCount,
+			listing.PageNumber,
+			linkNumber,
+			priceRangeLabel,
+			listing.IsSuperhost,
+			listing.IsGuestFavorite,
+			listing.Bedrooms,
+			listing.Bathrooms,
+			listing.Beds,
+			listing.Description,
+			listing.HouseRules,
+			newestReviewDate,
+		}
+		values = append(values, row)
+	}
+
+	range_ := fmt.Sprintf("%s!A:Q", sheetName)
+	valueRange := &sheets.ValueRange{Values: values}
+	_, err := w.service.Spreadsheets.Values.Append(w.spreadsheetID, range_, valueRange).
+		ValueInputOption("RAW").
+		InsertDataOption("INSERT_ROWS").
+		Do()
+	if err != nil {
+		return fmt.Errorf("failed to append to sheet: %w", err)
+	}
+
+	log.Printf("Appended %d listings to sheet '%s'\n", len(listings), sheetName)
+	return nil
+}
+
 // sanitizeSheetName removes invalid characters from sheet name
 func sanitizeSheetName(name string) string {
 	// Google Sheets sheet names cannot contain: / \ ? * [ ]

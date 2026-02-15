@@ -325,9 +325,8 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 
 	// Handle pagination
 	for pageCount < maxPages {
-		// Add delay between page requests (3-5 seconds)
-		// Use 4 seconds as average between 3-5
-		time.Sleep(4 * time.Second)
+		// Add delay between page requests (bigger window to reduce blocking)
+		time.Sleep(7 * time.Second)
 
 		// Get current URL before navigation attempt
 		beforeURLResult, err := page.Eval(`() => window.location.href`)
@@ -371,7 +370,7 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 
 		// Wait for page to load
 		page.WaitLoad()
-		time.Sleep(3 * time.Second) // Give JavaScript time to render
+		time.Sleep(5 * time.Second) // Give JavaScript time to render
 
 		// Wait for page to stabilize
 		if err := page.Timeout(15 * time.Second).WaitStable(500 * time.Millisecond); err != nil {
@@ -379,7 +378,7 @@ func (rf *RodFetcher) Fetch(url string, maxPages int) ([]string, error) {
 		}
 
 		// Additional wait to ensure listings are rendered
-		time.Sleep(2 * time.Second)
+		time.Sleep(3 * time.Second)
 
 		// Get URL after navigation to validate progress
 		afterURLResult, err := page.Eval(`() => window.location.href`)

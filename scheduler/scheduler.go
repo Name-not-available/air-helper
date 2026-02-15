@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"net/url"
 	"os"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -194,6 +196,36 @@ func (s *Scheduler) processNextRequest() {
 	cfg.Filters.MaxPrice = userConfig.MaxPrice
 	cfg.Filters.MinStars = userConfig.MinStars
 
+	// Create sheet at start (or reuse when resuming)
+	filterInfo := fmt.Sprintf("Min Reviews: %d, Min Price: %.2f, Max Price: %.2f, Min Stars: %.2f",
+		cfg.Filters.MinReviews, cfg.Filters.MinPrice, cfg.Filters.MaxPrice, cfg.Filters.MinStars)
+	metadataURL := req.URL
+	if totalLinks > 1 {
+		metadataURL = fmt.Sprintf("%d links - see Link # column", totalLinks)
+	}
+
+	var sheetName string
+	var sheetID int64
+	if req.SheetName.Valid && req.SheetName.String != "" {
+		sheetName = req.SheetName.String
+		sheetID = 0 // resume: no gid for deep link
+		log.Printf("Reusing existing sheet '%s' for request ID %d\n", sheetName, req.ID)
+	} else {
+		sheetName = fmt.Sprintf("Request_%d_%s", req.ID, time.Now().Format("20060102_150405"))
+		var createErr error
+		sheetName, sheetID, createErr = s.writer.CreateEmptySheet(sheetName, metadataURL, filterInfo)
+		if createErr != nil {
+			log.Printf("Error creating sheet: %v\n", createErr)
+			s.handleRequestError(req, createErr)
+			return
+		}
+		if err := s.db.UpdateRequestSheetName(req.ID, sheetName); err != nil {
+			log.Printf("Warning: Failed to update sheet name: %v\n", err)
+		}
+		sheetURL := s.createSheetURL(sheetID)
+		s.sendStatusUpdate(req.TelegramMessageID, req.UserID, fmt.Sprintf("📊 Sheet ready: %s", sheetURL))
+	}
+
 	// Create browser only when needed (on-demand)
 	log.Printf("Initializing browser for request ID %d...\n", req.ID)
 	rodFetcher, err := fetcher.NewRodFetcher()
@@ -220,25 +252,49 @@ func (s *Scheduler) processNextRequest() {
 	// Track seen listing URLs across all links for deduplication
 	seenListingURLs := make(map[string]int) // URL -> link number that first found it
 
+	// On resume: load seen URLs from already-completed (done) links so we dedupe correctly
+	doneLinkNumbers := make(map[int]bool)
+	for _, link := range searchLinks {
+		if link.Status == "done" {
+			doneLinkNumbers[link.LinkNumber] = true
+		}
+	}
+	if len(doneLinkNumbers) > 0 {
+		existingListings, err := s.db.GetListingURLsAndLinkNumbers(req.ID)
+		if err == nil {
+			for _, row := range existingListings {
+				if doneLinkNumbers[row.LinkNumber] {
+					seenListingURLs[row.URL] = row.LinkNumber
+				}
+			}
+		}
+	}
+
 	// Collect all listings from all links
 	var allEnrichedListings []models.Listing
 	var allUnfilteredListings []models.Listing
 	var totalListingsBeforeFilter int
 	var totalPagesFetched int
 
-	// Create retry queue from search links
+	// Track statistics (declared before queue build so we can count skipped done links on resume)
+	linksSuccessful := 0
+	linksFailed := 0
+	consecutiveFailures := 0
+
+	// Create retry queue from search links (skip links already done, e.g. on resume)
 	type queueItem struct {
 		link       db.SearchLink
 		retryCount int
 	}
 	queue := make([]queueItem, 0, len(searchLinks))
 	for _, link := range searchLinks {
+		if link.Status == "done" {
+			linksSuccessful++
+			totalListingsBeforeFilter += link.ListingsCount
+			continue
+		}
 		queue = append(queue, queueItem{link: link, retryCount: link.RetryCount})
 	}
-
-	// Track statistics
-	linksSuccessful := 0
-	linksFailed := 0
 
 	// Track per-price-range statistics
 	type priceRangeStat struct {
@@ -268,14 +324,14 @@ func (s *Scheduler) processNextRequest() {
 			time.Sleep(time.Duration(waitMinutes) * time.Minute)
 		}
 
-		// Notify user we're starting this link
-		shortURL := shortenURL(link.URL)
+		// Notify user we're starting this link (with clickable URL, no preview)
+		rangeLabel := pricerange.ExtractPriceRangeLabel(link.URL)
 		if item.retryCount > 0 {
 			s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
-				fmt.Sprintf("🔄 Retrying link %d/%d (attempt %d/3): %s", link.LinkNumber, totalLinks, item.retryCount+1, shortURL))
+				fmt.Sprintf("🔄 Retrying link %d/%d (attempt %d/3) [%s]: <a href=\"%s\">open</a>", link.LinkNumber, totalLinks, item.retryCount+1, rangeLabel, link.URL))
 		} else {
 			s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
-				fmt.Sprintf("🔗 Starting link %d/%d: %s", link.LinkNumber, totalLinks, shortURL))
+				fmt.Sprintf("🔗 Starting link %d/%d [%s]: <a href=\"%s\">open</a>", link.LinkNumber, totalLinks, rangeLabel, link.URL))
 		}
 
 		// Update link status to in_progress
@@ -292,6 +348,18 @@ func (s *Scheduler) processNextRequest() {
 		if linkErr != nil {
 			errStr := linkErr.Error()
 			log.Printf("Link %d failed: %v\n", link.LinkNumber, linkErr)
+			consecutiveFailures++
+
+			// Block detection: pause after 2 consecutive failures so user can continue later
+			if consecutiveFailures >= 2 {
+				_ = s.db.UpdateSearchLinkStatus(link.ID, "pending", nil) // so it gets retried on resume
+				if err := s.db.UpdateRequestStatus(req.ID, "paused"); err != nil {
+					log.Printf("Error updating request status to paused: %v\n", err)
+				}
+				s.sendPausedWithContinueButton(req.TelegramMessageID, req.UserID, req.ID)
+				log.Printf("Request %d paused after %d consecutive failures; user can continue later\n", req.ID, consecutiveFailures)
+				return
+			}
 
 			// Check if we should retry
 			if item.retryCount < 3 {
@@ -322,6 +390,7 @@ func (s *Scheduler) processNextRequest() {
 			}
 		} else {
 			// Success!
+			consecutiveFailures = 0
 			if err := s.db.UpdateSearchLinkStatus(link.ID, "done", nil); err != nil {
 				log.Printf("Error updating search link status to done: %v\n", err)
 			}
@@ -353,6 +422,11 @@ func (s *Scheduler) processNextRequest() {
 				LinkNumber:     link.LinkNumber,
 			})
 
+			// Append this link's listings to the sheet immediately
+			if err := s.writer.AppendListingsToSheet(sheetName, linkListings); err != nil {
+				log.Printf("Warning: Failed to append listings to sheet: %v\n", err)
+			}
+
 			s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
 				fmt.Sprintf("✅ Link %d [%s] completed: %d listings found (%d new after dedup)", 
 					link.LinkNumber, rangeLabel, listingsBeforeFilter, len(linkListings)))
@@ -372,33 +446,6 @@ func (s *Scheduler) processNextRequest() {
 	// Update request counts
 	if err := s.db.UpdateRequestCounts(req.ID, totalFilteredListings, totalPagesFetched); err != nil {
 		log.Printf("Error updating request counts: %v\n", err)
-	}
-
-	// Create sheet name from request ID and timestamp
-	sheetName := fmt.Sprintf("Request_%d_%s", req.ID, time.Now().Format("20060102_150405"))
-
-	// Format filter information
-	filterInfo := fmt.Sprintf("Min Reviews: %d, Min Price: %.2f, Max Price: %.2f, Min Stars: %.2f",
-		cfg.Filters.MinReviews, cfg.Filters.MinPrice, cfg.Filters.MaxPrice, cfg.Filters.MinStars)
-
-	// Get first URL for metadata (or combine for multi-link)
-	metadataURL := req.URL
-	if totalLinks > 1 {
-		metadataURL = fmt.Sprintf("%d links - see Link # column", totalLinks)
-	}
-
-	// Write to Google Sheets (sheet will be inserted at the beginning)
-	s.sendStatusUpdate(req.TelegramMessageID, req.UserID, "📊 Writing to Google Sheets...")
-	createdSheetName, sheetID, err := s.writer.CreateSheetAndWriteListings(sheetName, allEnrichedListings, allUnfilteredListings, metadataURL, filterInfo)
-	if err != nil {
-		log.Printf("Error writing to Google Sheets: %v\n", err)
-		s.handleRequestError(req, err)
-		return
-	}
-
-	// Update request with sheet name
-	if err := s.db.UpdateRequestSheetName(req.ID, createdSheetName); err != nil {
-		log.Printf("Warning: Failed to update sheet name: %v\n", err)
 	}
 
 	// Update status to 'done'
@@ -476,17 +523,16 @@ func (s *Scheduler) processSearchLink(
 	}
 
 	// Parse listings
+	rangeLabel := pricerange.ExtractPriceRangeLabel(link.URL)
 	var allListings []models.Listing
 	for i, html := range htmlPages {
 		pageNum := i + 1
 		log.Printf("Link %d: Parsing page %d/%d\n", link.LinkNumber, pageNum, pagesFetched)
-		
-		// Send update every 10 pages
-		if pageNum%10 == 0 || pageNum == 1 {
-			s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
-				fmt.Sprintf("📄 Link %d: Parsing page %d/%d...", link.LinkNumber, pageNum, pagesFetched))
-		}
-		
+
+		pageURL := buildSearchPageURL(link.URL, pageNum)
+		s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
+			fmt.Sprintf("📄 Link %d [%s]: Parsing page %d/%d - <a href=\"%s\">open</a>", link.LinkNumber, rangeLabel, pageNum, pagesFetched, pageURL))
+
 		listings, err := parserInstance.ParseHTML(html)
 		if err != nil {
 			log.Printf("Warning: Failed to parse page %d: %v\n", pageNum, err)
@@ -641,6 +687,16 @@ func (s *Scheduler) enrichListings(
 		go func(workerID int) {
 			defer wg.Done()
 			for job := range jobs {
+				// Notify user every 5th detail page (with link, no preview)
+				if job.index%5 == 0 {
+					title := truncateText(job.listing.Title, 40)
+					if title == "" {
+						title = "listing"
+					}
+					title = strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(title, "&", "&amp;"), "<", "&lt;"), ">", "&gt;")
+					s.sendStatusUpdate(req.TelegramMessageID, req.UserID,
+						fmt.Sprintf("🔍 Link %d: Enriching %d/%d - <a href=\"%s\">%s</a>", linkNumber, job.index+1, filteredCount, job.listing.URL, title))
+				}
 				detailHTML, err := detailFetcher.FetchDetailPage(job.listing.URL)
 				if err != nil {
 					log.Printf("Worker %d: Failed to fetch detail page: %v\n", workerID, err)
@@ -720,8 +776,8 @@ func (s *Scheduler) enrichListings(
 		}(w)
 	}
 
-	// Rate limiter
-	rateLimiter := time.NewTicker(4 * time.Second)
+	// Rate limiter (bigger window to reduce blocking)
+	rateLimiter := time.NewTicker(7 * time.Second)
 	defer rateLimiter.Stop()
 
 	// Send jobs
@@ -782,6 +838,19 @@ func (s *Scheduler) enrichListings(
 	return finalListings
 }
 
+// buildSearchPageURL returns the approximate URL for a given search result page (1-based).
+// items_offset is set to (pageNum-1)*20 to match typical Airbnb pagination.
+func buildSearchPageURL(baseURL string, pageNum int) string {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return baseURL
+	}
+	q := parsed.Query()
+	q.Set("items_offset", strconv.Itoa((pageNum-1)*20))
+	parsed.RawQuery = q.Encode()
+	return parsed.String()
+}
+
 // shortenURL creates a shortened display version of a URL
 func shortenURL(urlStr string) string {
 	// Remove protocol
@@ -803,6 +872,15 @@ func truncateError(errStr string) string {
 		return errStr[:97] + "..."
 	}
 	return errStr
+}
+
+// truncateText truncates text to maxLen runes for display (e.g. listing title in notifications)
+func truncateText(s string, maxLen int) string {
+	r := []rune(s)
+	if len(r) <= maxLen {
+		return s
+	}
+	return string(r[:maxLen-3]) + "..."
 }
 
 // handleRequestError handles errors during request processing
@@ -863,5 +941,23 @@ func (s *Scheduler) sendStatusUpdate(messageID int, userID int64, text string) {
 	_, err := s.bot.Send(msg)
 	if err != nil {
 		log.Printf("Error sending status update: %v\n", err)
+	}
+}
+
+// sendPausedWithContinueButton sends a paused notification with an inline "Continue" button
+func (s *Scheduler) sendPausedWithContinueButton(messageID int, userID int64, requestID int) {
+	text := "⏸ Request paused (multiple failures). Save any data and tap Continue when ready to resume."
+	msg := tgbotapi.NewMessage(userID, text)
+	msg.ReplyToMessageID = messageID
+	msg.ParseMode = "HTML"
+	msg.DisableWebPagePreview = true
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("Continue", fmt.Sprintf("resume|%d", requestID)),
+		),
+	)
+	_, err := s.bot.Send(msg)
+	if err != nil {
+		log.Printf("Error sending paused message: %v\n", err)
 	}
 }

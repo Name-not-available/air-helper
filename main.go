@@ -137,6 +137,18 @@ func handleCallbackQuery(bot *tgbotapi.BotAPI, database *db.DB, callback *tgbota
 		// Store which config type this user is entering
 		pendingConfigInput[userID] = configType
 		bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Please enter the new value for %s (as a number):", configType)))
+	} else if strings.HasPrefix(data, "resume|") {
+		requestIDStr := strings.TrimPrefix(data, "resume|")
+		requestID, err := strconv.Atoi(requestIDStr)
+		if err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, "Invalid request ID."))
+			return
+		}
+		if err := database.UpdateRequestStatus(requestID, "created"); err != nil {
+			bot.Send(tgbotapi.NewMessage(chatID, fmt.Sprintf("Failed to resume: %v", err)))
+			return
+		}
+		bot.Send(tgbotapi.NewMessage(chatID, "Resuming request... The scheduler will pick it up shortly."))
 	}
 }
 

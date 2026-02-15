@@ -109,11 +109,18 @@ func (db *DB) initSchema() error {
 			sheet_name VARCHAR(255),
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-			CONSTRAINT valid_status CHECK (status IN ('created', 'in_progress', 'done', 'failed'))
+			CONSTRAINT valid_status CHECK (status IN ('created', 'in_progress', 'done', 'failed', 'paused'))
 		)
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to create requests table: %w", err)
+	}
+
+	// Migration: ensure 'paused' is in requests status constraint (for existing DBs)
+	_, _ = db.conn.Exec(`ALTER TABLE requests DROP CONSTRAINT IF EXISTS valid_status`)
+	_, err = db.conn.Exec(`ALTER TABLE requests ADD CONSTRAINT valid_status CHECK (status IN ('created', 'in_progress', 'done', 'failed', 'paused'))`)
+	if err != nil {
+		log.Printf("Note: requests valid_status constraint may already be correct: %v\n", err)
 	}
 
 	// Create listings table

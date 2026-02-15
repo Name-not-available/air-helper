@@ -50,9 +50,8 @@ func (df *DetailFetcher) FetchDetailPage(url string) (string, error) {
 	// Wait for page to load
 	page.WaitLoad()
 
-	// Reduced wait time - WaitStable already handles most of the rendering
-	// Only wait 1 second for initial JS execution
-	time.Sleep(1 * time.Second)
+	// Wait for initial JS execution before WaitStable
+	time.Sleep(2 * time.Second)
 
 	// Wait for page to stabilize (this is more efficient than fixed sleeps)
 	// Reduced timeout from 10s to 5s and stability check from 500ms to 300ms

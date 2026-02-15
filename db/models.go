@@ -385,6 +385,27 @@ func (db *DB) GetListingIDByURL(requestID int, url string) (int, error) {
 	return listingID, err
 }
 
+// GetListingURLsAndLinkNumbers returns all listing URLs and their link numbers for a request (for resume deduplication)
+func (db *DB) GetListingURLsAndLinkNumbers(requestID int) ([]struct{ URL string; LinkNumber int }, error) {
+	rows, err := db.conn.Query(`
+		SELECT url, COALESCE(link_number, 0) FROM listings WHERE request_id = $1
+	`, requestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []struct{ URL string; LinkNumber int }
+	for rows.Next() {
+		var url string
+		var linkNum int
+		if err := rows.Scan(&url, &linkNum); err != nil {
+			return nil, err
+		}
+		result = append(result, struct{ URL string; LinkNumber int }{url, linkNum})
+	}
+	return result, rows.Err()
+}
+
 // SaveReviews saves multiple reviews for a listing
 // Accepts models.Review slice and converts to database format
 func (db *DB) SaveReviews(listingID int, reviews []models.Review) error {
