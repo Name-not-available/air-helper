@@ -36,6 +36,8 @@ type Scheduler struct {
 	cancel         context.CancelFunc
 	activeRequests int
 	requestsMutex  sync.Mutex
+	lastMsgMu      sync.Mutex
+	lastMsgTime    time.Time
 }
 
 // NewScheduler creates a new scheduler (browser will be created on-demand)
@@ -422,8 +424,9 @@ func (s *Scheduler) processNextRequest() {
 				LinkNumber:     link.LinkNumber,
 			})
 
-			// Append this link's listings to the sheet immediately
-			if err := s.writer.AppendListingsToSheet(sheetName, linkListings); err != nil {
+			// Append this link's listings to the sheet immediately (filtered + unfiltered mixed)
+			allLinkListings := append(linkListings, linkUnfiltered...)
+			if err := s.writer.AppendListingsToSheet(sheetName, allLinkListings); err != nil {
 				log.Printf("Warning: Failed to append listings to sheet: %v\n", err)
 			}
 
@@ -932,8 +935,16 @@ func extractURLPath(urlStr string) string {
 	return urlStr
 }
 
-// sendStatusUpdate sends a status update message to Telegram
+// sendStatusUpdate sends a status update message to Telegram (rate-limited to 500ms between messages)
 func (s *Scheduler) sendStatusUpdate(messageID int, userID int64, text string) {
+	s.lastMsgMu.Lock()
+	elapsed := time.Since(s.lastMsgTime)
+	if elapsed < 500*time.Millisecond {
+		time.Sleep(500*time.Millisecond - elapsed)
+	}
+	s.lastMsgTime = time.Now()
+	s.lastMsgMu.Unlock()
+
 	msg := tgbotapi.NewMessage(userID, text)
 	msg.ReplyToMessageID = messageID
 	msg.ParseMode = "HTML"
@@ -944,8 +955,16 @@ func (s *Scheduler) sendStatusUpdate(messageID int, userID int64, text string) {
 	}
 }
 
-// sendPausedWithContinueButton sends a paused notification with an inline "Continue" button
+// sendPausedWithContinueButton sends a paused notification with an inline "Continue" button (rate-limited to 500ms)
 func (s *Scheduler) sendPausedWithContinueButton(messageID int, userID int64, requestID int) {
+	s.lastMsgMu.Lock()
+	elapsed := time.Since(s.lastMsgTime)
+	if elapsed < 500*time.Millisecond {
+		time.Sleep(500*time.Millisecond - elapsed)
+	}
+	s.lastMsgTime = time.Now()
+	s.lastMsgMu.Unlock()
+
 	text := "⏸ Request paused (multiple failures). Save any data and tap Continue when ready to resume."
 	msg := tgbotapi.NewMessage(userID, text)
 	msg.ReplyToMessageID = messageID
