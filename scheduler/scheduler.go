@@ -556,8 +556,9 @@ func (s *Scheduler) processSearchLink(
 	totalListings = len(allListings)
 	log.Printf("Link %d: Total listings parsed: %d\n", link.LinkNumber, totalListings)
 
+	// 0 listings is valid (e.g. empty price range like 0–50$) — treat as success so we don't fail/retry the link
 	if len(allListings) == 0 {
-		return nil, nil, pagesFetched, 0, fmt.Errorf("no listings found")
+		return nil, nil, pagesFetched, 0, nil
 	}
 
 	// Apply filters
@@ -779,8 +780,13 @@ func (s *Scheduler) enrichListings(
 		}(w)
 	}
 
-	// Rate limiter (bigger window to reduce blocking)
-	rateLimiter := time.NewTicker(7 * time.Second)
+	// Request timing (for reference):
+	// - Search first page: 3s after load (rod_scraper), then WaitStable.
+	// - Between search pages: 7s before next page, then 5s+WaitStable+3s after navigate.
+	// - Between links: no extra delay.
+	// - Detail pages: detailRequestInterval between starting each request (2 workers).
+	const detailRequestInterval = 10 * time.Second
+	rateLimiter := time.NewTicker(detailRequestInterval)
 	defer rateLimiter.Stop()
 
 	// Send jobs
